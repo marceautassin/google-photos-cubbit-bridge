@@ -72,3 +72,30 @@ export interface UploadProgress {
   percentage: number;
   speed?: number; // bytes per second
 }
+
+/**
+ * Objet tel que listé dans un bucket (inventaire, story 2.1).
+ */
+export interface BucketObject {
+  key: string;
+  size: number;
+  lastModified: Date | null;
+  etag: string | null; // sans guillemets
+}
+
+/**
+ * Une page de listing S3.
+ */
+export interface BucketObjectPage {
+  objects: BucketObject[];
+  isTruncated: boolean; // d'autres pages suivent
+  nextToken?: string;
+}
+
+/**
+ * Accès en lecture seule au contenu d'un bucket : lister, et rien d'autre.
+ */
+export interface BucketLister {
+  readonly bucket: string;
+  listPage(continuationToken?: string): Promise<BucketObjectPage>;
+}

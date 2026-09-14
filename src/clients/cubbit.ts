@@ -1,4 +1,5 @@
 import { S3Client, PutObjectCommand, HeadObjectCommand, CreateBucketCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
+import { createS3Client } from './s3-client';
 import { Upload } from '@aws-sdk/lib-storage';
 import * as fs from 'fs-extra';
 import * as path from 'path';
@@ -14,15 +15,7 @@ export class CubbitClient {
   constructor(config: AppConfig['cubbit']) {
     this.config = config;
     
-    this.s3Client = new S3Client({
-      endpoint: config.endpoint,
-      region: config.region || 'us-east-1',
-      credentials: {
-        accessKeyId: config.accessKeyId,
-        secretAccessKey: config.secretAccessKey,
-      },
-      forcePathStyle: config.forcePathStyle ?? true,
-    });
+    this.s3Client = createS3Client(config);
   }
 
   /**

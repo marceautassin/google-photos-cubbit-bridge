@@ -54,8 +54,8 @@ development_status:
   1-3-retirer-les-scripts-correctifs-ponctuels: done
   epic-1-retrospective: optional
 
-  epic-2: backlog
-  2-1-inventorier-le-bucket-entier: backlog
+  epic-2: in-progress
+  2-1-inventorier-le-bucket-entier: done
   2-2-reconstruire-la-date-de-prise-de-vue-par-cascade-tracee: backlog
   2-3-identifier-les-doublons-et-les-collisions-de-noms: backlog
   2-4-produire-le-plan-de-reparation-inspectable: backlog

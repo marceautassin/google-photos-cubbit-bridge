@@ -131,6 +131,27 @@ async function runMigrations(database: DatabaseSync): Promise<void> {
         END;
       `,
     },
+    {
+      version: 4,
+      name: 'create_inventory_tables',
+      sql: `
+        CREATE TABLE IF NOT EXISTS inventory_objects (
+          bucket TEXT NOT NULL,
+          key TEXT NOT NULL,
+          size INTEGER NOT NULL,
+          last_modified TEXT,
+          etag TEXT,
+          PRIMARY KEY (bucket, key)
+        );
+
+        CREATE TABLE IF NOT EXISTS inventory_runs (
+          bucket TEXT PRIMARY KEY,
+          completed_at TEXT NOT NULL,
+          object_count INTEGER NOT NULL,
+          total_size INTEGER NOT NULL
+        );
+      `,
+    },
   ];
 
   // Créer la table de versioning si elle n'existe pas
