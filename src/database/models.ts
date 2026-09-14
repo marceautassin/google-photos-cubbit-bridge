@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import { DatabaseSync } from 'node:sqlite';
 import { getDatabase } from './connection';
 import { SyncRecord, SyncSession, SyncStatus } from '../clients/types';
 import { getLogger } from '../utils/logger';
@@ -7,7 +7,7 @@ import { getLogger } from '../utils/logger';
  * Modèle pour les enregistrements de synchronisation
  */
 export class SyncRecordModel {
-  private db: Database.Database;
+  private db: DatabaseSync;
 
   constructor() {
     this.db = getDatabase();
@@ -33,13 +33,13 @@ export class SyncRecordModel {
       record.fileSize,
       record.mimeType,
       record.createdDate.toISOString(),
-      record.syncDate?.toISOString(),
+      record.syncDate?.toISOString() ?? null,
       record.status,
-      record.errorMessage,
+      record.errorMessage ?? null,
       JSON.stringify(record.metadata)
     );
 
-    return result.lastInsertRowid as number;
+    return Number(result.lastInsertRowid);
   }
 
   /**
@@ -86,7 +86,7 @@ export class SyncRecordModel {
       }
       
       fields.push(`${dbKey} = ?`);
-      values.push(value as any);
+      values.push(value ?? null); // node:sqlite refuse de lier undefined
     });
 
     if (fields.length === 0) return;
@@ -205,7 +205,7 @@ export class SyncRecordModel {
  * Modèle pour les sessions de synchronisation
  */
 export class SyncSessionModel {
-  private db: Database.Database;
+  private db: DatabaseSync;
 
   constructor() {
     this.db = getDatabase();
@@ -224,7 +224,7 @@ export class SyncSessionModel {
 
     const result = stmt.run(
       session.startTime.toISOString(),
-      session.endTime?.toISOString(),
+      session.endTime?.toISOString() ?? null,
       session.status,
       session.filesProcessed,
       session.filesSuccess,
@@ -233,7 +233,7 @@ export class SyncSessionModel {
       session.config ? JSON.stringify(session.config) : null
     );
 
-    return result.lastInsertRowid as number;
+    return Number(result.lastInsertRowid);
   }
 
   /**
@@ -274,7 +274,7 @@ export class SyncSessionModel {
       }
       
       fields.push(`${dbKey} = ?`);
-      values.push(value as any);
+      values.push(value ?? null); // node:sqlite refuse de lier undefined
     });
 
     if (fields.length === 0) return;
@@ -355,7 +355,7 @@ export class SyncSessionModel {
  * Modèle pour les métadonnées de l'application
  */
 export class AppMetadataModel {
-  private db: Database.Database;
+  private db: DatabaseSync;
 
   constructor() {
     this.db = getDatabase();

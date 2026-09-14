@@ -1,26 +1,28 @@
-import Database from 'better-sqlite3';
+import { backup, DatabaseSync } from 'node:sqlite';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { AppConfig } from '../config/types';
 import { getLogger } from '../utils/logger';
 
-let db: Database.Database | null = null;
+let db: DatabaseSync | null = null;
 
 /**
  * Initialise la connexion à la base de données
  */
-export async function initDatabase(config: AppConfig['database']): Promise<Database.Database> {
+export async function initDatabase(config: AppConfig['database']): Promise<DatabaseSync> {
   try {
     // S'assurer que le répertoire existe
     await fs.ensureDir(path.dirname(config.path));
     
-    // Créer la connexion
-    db = new Database(config.path);
+    // Moteur d'index (Q2) : node:sqlite, intégré à Node ≥ 22.16 (backup() requis) — aucune compilation native, et l'index est reconstructible depuis le bucket.
+    db = new DatabaseSync(config.path);
     
     // Configurer la base de données
-    db.pragma('journal_mode = WAL');
-    db.pragma('synchronous = NORMAL');
-    db.pragma('foreign_keys = ON');
+    db.exec(`
+      PRAGMA journal_mode = WAL;
+      PRAGMA synchronous = NORMAL;
+      PRAGMA foreign_keys = ON;
+    `);
     
     // Exécuter les migrations
     await runMigrations(db);
@@ -37,7 +39,7 @@ export async function initDatabase(config: AppConfig['database']): Promise<Datab
 /**
  * Obtient l'instance de la base de données
  */
-export function getDatabase(): Database.Database {
+export function getDatabase(): DatabaseSync {
   if (!db) {
     throw new Error('Base de données non initialisée. Appelez initDatabase() d\'abord.');
   }
@@ -58,7 +60,7 @@ export function closeDatabase(): void {
 /**
  * Exécute les migrations de la base de données
  */
-async function runMigrations(database: Database.Database): Promise<void> {
+async function runMigrations(database: DatabaseSync): Promise<void> {
   const migrations = [
     {
       version: 1,
@@ -152,14 +154,19 @@ async function runMigrations(database: Database.Database): Promise<void> {
     if (migration.version > startVersion) {
       getLogger().info(`Application de la migration ${migration.version}: ${migration.name}`);
       
-      const transaction = database.transaction(() => {
+      // node:sqlite n'offre pas d'aide aux transactions : BEGIN/COMMIT explicites
+      database.exec('BEGIN');
+      try {
         database.exec(migration.sql);
         database
           .prepare('INSERT INTO schema_version (version, name) VALUES (?, ?)')
           .run(migration.version, migration.name);
-      });
-      
-      transaction();
+        database.exec('COMMIT');
+      } catch (error) {
+        // SQLite peut avoir déjà annulé la transaction : ne pas masquer l'erreur d'origine
+        if (database.isTransaction) database.exec('ROLLBACK');
+        throw error;
+      }
       
       getLogger().info(`Migration ${migration.version} appliquée avec succès`);
     }
@@ -176,7 +183,7 @@ export async function backupDatabase(backupPath: string): Promise<void> {
 
   try {
     await fs.ensureDir(path.dirname(backupPath));
-    db.backup(backupPath);
+    await backup(db, backupPath);
     getLogger().info(`Sauvegarde de la base de données créée: ${backupPath}`);
   } catch (error) {
     getLogger().error('Erreur lors de la sauvegarde de la base de données:', error);
