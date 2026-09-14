@@ -69,3 +69,8 @@ desktop.ini
 
 # Linux
 *~
+
+# BMAD / Claude Code — outillage local, pas du produit
+# Les artefacts de planification (_bmad-output/) restent versionnes : ils sont le suivi projet.
+_bmad/
+.claude/
