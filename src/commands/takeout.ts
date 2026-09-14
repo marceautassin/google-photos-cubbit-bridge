@@ -123,6 +123,9 @@ async function importCommand(takeoutPath: string, options: any, config: AppConfi
       mimeType: item.mimeType,
       createdDate: item.creationDate,
       status: SyncStatus.PENDING,
+      // Un réimport repart d'un état propre : pas d'ancienne erreur ni de date d'envoi
+      errorMessage: undefined,
+      syncDate: undefined,
       metadata: {
         ...item.metadata,
         albumTitle: item.album,
@@ -149,7 +152,7 @@ async function importCommand(takeoutPath: string, options: any, config: AppConfi
   console.log(`   Importés: ${chalk.green(importedCount)}`);
   console.log(`   Ignorés: ${chalk.yellow(skippedCount)}`);
   console.log('\n' + chalk.blue('Vous pouvez maintenant lancer la synchronisation avec:'));
-  console.log(chalk.cyan('   gpb sync --all'));
+  console.log(chalk.cyan('   gpb sync'));
 }
 
 async function listCommand(takeoutPath: string, options: any, config: AppConfig): Promise<void> {

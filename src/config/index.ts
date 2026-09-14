@@ -20,14 +20,6 @@ const LOGS_DIR = path.join(PROJECT_ROOT, 'logs');
  * Configuration par défaut de l'application
  */
 const defaultConfig: AppConfig = {
-  googlePhotos: {
-    clientId: process.env.GOOGLE_CLIENT_ID || '',
-    clientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
-    redirectUri: process.env.GOOGLE_REDIRECT_URI || 'http://localhost:3000/auth/callback',
-    scopes: [
-      'https://www.googleapis.com/auth/photospicker.mediaitems.readonly'
-    ],
-  },
   cubbit: {
     endpoint: process.env.CUBBIT_ENDPOINT || '',
     accessKeyId: process.env.CUBBIT_ACCESS_KEY_ID || '',
@@ -37,7 +29,6 @@ const defaultConfig: AppConfig = {
     forcePathStyle: true, // Nécessaire pour la plupart des implémentations S3 compatibles
   },
   sync: {
-    downloadPath: path.join(PROJECT_ROOT, 'temp_downloads'),
     maxConcurrentDownloads: parseInt(process.env.MAX_CONCURRENT_DOWNLOADS || '3'),
     supportedFormats: ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'mp4', 'mov', 'avi', 'mkv'],
     preserveFolderStructure: true,
@@ -65,7 +56,6 @@ export async function loadConfig(): Promise<AppConfig> {
   // Créer les répertoires nécessaires
   await fs.ensureDir(DATA_DIR);
   await fs.ensureDir(LOGS_DIR);
-  await fs.ensureDir(path.dirname(defaultConfig.sync.downloadPath));
 
   let fileConfig: Partial<AppConfig> = {};
 
@@ -82,10 +72,6 @@ export async function loadConfig(): Promise<AppConfig> {
   const config: AppConfig = {
     ...defaultConfig,
     ...fileConfig,
-    googlePhotos: {
-      ...defaultConfig.googlePhotos,
-      ...fileConfig.googlePhotos,
-    },
     cubbit: {
       ...defaultConfig.cubbit,
       ...fileConfig.cubbit,
@@ -121,12 +107,6 @@ export async function saveConfig(config: AppConfig): Promise<void> {
 export function validateConfig(config: AppConfig): string[] {
   const errors: string[] = [];
 
-  if (!config.googlePhotos.clientId) {
-    errors.push('Google Photos Client ID manquant');
-  }
-  if (!config.googlePhotos.clientSecret) {
-    errors.push('Google Photos Client Secret manquant');
-  }
   if (!config.cubbit.endpoint) {
     errors.push('Cubbit endpoint manquant');
   }

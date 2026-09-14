@@ -129,14 +129,13 @@ async function statusCommand(config: AppConfig, options: any): Promise<void> {
     }
     
     if (stats.errorRecords > 0) {
-      console.log(`   • ${chalk.cyan('gpb sync --force')} - Forcer la resynchronisation des erreurs`);
+      console.log(`   • ${chalk.cyan('gpb takeout import <chemin-takeout> --force')} - Réimporter pour renvoyer les éléments en erreur`);
       
       if (!options.detailed) {
         console.log(`   • ${chalk.cyan('gpb status --detailed')} - Voir les détails des erreurs`);
       }
     }
     
-    console.log(`   • ${chalk.cyan('gpb cleanup')} - Nettoyer les fichiers temporaires`);
     console.log(`   • ${chalk.cyan('gpb history')} - Voir l'historique complet`);
 
   } catch (error) {

@@ -1,25 +1,14 @@
-import * as path from 'path';
 import * as fs from 'fs-extra';
-import { AppConfig, SearchFilters } from '../config/types';
-import { GooglePhotosClient } from '../clients/google-photos';
+import { AppConfig } from '../config/types';
 import { CubbitClient } from '../clients/cubbit';
 import { SyncRecordModel, SyncSessionModel } from '../database/models';
 import { MediaItem, SyncRecord, SyncSession, SyncStatus } from '../clients/types';
-import { getLogger, logProgress, logError } from '../utils/logger';
-import { generateDatePath, isSupportedFormat, formatBytes, generateUniqueFilename } from '../utils/file-utils';
+import { getLogger, logError } from '../utils/logger';
+import { isSupportedFormat, formatBytes } from '../utils/file-utils';
 
 export interface SyncOptions {
-  albumId?: string;
-  albumTitle?: string;
-  dateRange?: {
-    startDate: string;
-    endDate: string;
-  };
-  mediaTypes?: ('PHOTO' | 'VIDEO')[];
-  forceResync?: boolean;
   maxConcurrent?: number;
   dryRun?: boolean;
-  takeoutOnly?: boolean;
 }
 
 export interface SyncProgress {
@@ -36,7 +25,6 @@ export interface SyncProgress {
 
 export class SyncManager {
   private config: AppConfig;
-  private googlePhotos: GooglePhotosClient;
   private cubbit: CubbitClient;
   private syncRecords: SyncRecordModel;
   private syncSessions: SyncSessionModel;
@@ -46,7 +34,6 @@ export class SyncManager {
 
   constructor(config: AppConfig) {
     this.config = config;
-    this.googlePhotos = new GooglePhotosClient(config.googlePhotos);
     this.cubbit = new CubbitClient(config.cubbit);
     this.syncRecords = new SyncRecordModel();
     this.syncSessions = new SyncSessionModel();
@@ -63,11 +50,6 @@ export class SyncManager {
    * Lance une synchronisation
    */
   async sync(options: SyncOptions = {}): Promise<SyncProgress> {
-    // Vérifier les authentifications (sauf pour takeoutOnly)
-    if (!options.takeoutOnly && !(await this.googlePhotos.isAuthenticated())) {
-      throw new Error('Non authentifié sur Google Photos. Lancez d\'abord la commande auth.');
-    }
-
     if (!(await this.cubbit.testConnection())) {
       throw new Error('Impossible de se connecter à Cubbit. Vérifiez votre configuration.');
     }
@@ -80,7 +62,7 @@ export class SyncManager {
     
     try {
       // Récupérer les éléments média à synchroniser
-      const mediaItems = await this.getMediaItemsToSync(options);
+      const mediaItems = await this.getMediaItemsToSync();
       
       if (mediaItems.length === 0) {
         getLogger().info('Aucun élément média à synchroniser');
@@ -102,9 +84,6 @@ export class SyncManager {
         filesError: 0,
         totalSize: totalBytes,
       });
-
-      // Créer les enregistrements de synchronisation
-      await this.createSyncRecords(mediaItems, options);
 
       // Lancer la synchronisation en parallèle
       const maxConcurrent = options.maxConcurrent || this.config.sync.maxConcurrentDownloads;
@@ -179,34 +158,6 @@ export class SyncManager {
   }
 
   /**
-   * Nettoie les fichiers temporaires
-   */
-  async cleanup(): Promise<number> {
-    const tempDir = this.config.sync.downloadPath;
-    
-    if (!(await fs.pathExists(tempDir))) {
-      return 0;
-    }
-
-    let deletedCount = 0;
-    const files = await fs.readdir(tempDir);
-    
-    for (const file of files) {
-      const filePath = path.join(tempDir, file);
-      const stats = await fs.stat(filePath);
-      
-      // Supprimer les fichiers plus anciens que 1 heure
-      if (Date.now() - stats.mtime.getTime() > 60 * 60 * 1000) {
-        await fs.remove(filePath);
-        deletedCount++;
-      }
-    }
-
-    getLogger().info(`${deletedCount} fichiers temporaires supprimés`);
-    return deletedCount;
-  }
-
-  /**
    * Crée une session de synchronisation
    */
   private async createSyncSession(options: SyncOptions): Promise<number> {
@@ -218,11 +169,6 @@ export class SyncManager {
       filesError: 0,
       totalSize: 0,
       config: {
-        albumId: options.albumId,
-        albumTitle: options.albumTitle,
-        dateRange: options.dateRange,
-        mediaTypes: options.mediaTypes,
-        forceResync: options.forceResync,
         maxConcurrent: options.maxConcurrent,
         dryRun: options.dryRun,
       },
@@ -255,15 +201,11 @@ export class SyncManager {
   }
 
   /**
-   * Récupère les éléments média à synchroniser
+   * Récupère les éléments média à synchroniser : les enregistrements Takeout en attente
    */
-  private async getMediaItemsToSync(options: SyncOptions): Promise<MediaItem[]> {
-    let mediaItems: MediaItem[];
-
-    if (options.takeoutOnly) {
-      // Pour les données Takeout, récupérer directement les enregistrements avec status PENDING
-      const syncRecords = await this.syncRecords.findByStatus(SyncStatus.PENDING);
-      mediaItems = syncRecords
+  private async getMediaItemsToSync(): Promise<MediaItem[]> {
+    const syncRecords = await this.syncRecords.findByStatus(SyncStatus.PENDING);
+    const mediaItems = syncRecords
         .filter(record => record.metadata && typeof record.metadata === 'object' && 'source' in record.metadata && record.metadata.source === 'takeout')
         .map(record => ({
           id: record.googlePhotoId,
@@ -276,88 +218,11 @@ export class SyncManager {
           height: record.metadata?.height,
           description: record.metadata?.description,
         }));
-    } else if (options.albumId) {
-      mediaItems = await this.googlePhotos.getAlbumMediaItems(options.albumId);
-    } else {
-      const filters: SearchFilters = {};
-      
-      if (options.dateRange) {
-        filters.dateRange = options.dateRange;
-      }
-      
-      if (options.mediaTypes) {
-        filters.mediaTypes = options.mediaTypes;
-      }
-
-      if (Object.keys(filters).length > 0) {
-        mediaItems = await this.googlePhotos.searchMediaItems(filters);
-      } else {
-        mediaItems = await this.googlePhotos.getAllMediaItems();
-      }
-    }
 
     // Filtrer les formats supportés
-    mediaItems = mediaItems.filter(item => 
+    return mediaItems.filter(item =>
       isSupportedFormat(item.filename, this.config.sync.supportedFormats)
     );
-
-    // Exclure les éléments déjà synchronisés (sauf si forceResync ou takeoutOnly)
-    if (!options.forceResync && !options.takeoutOnly) {
-      const filteredItems: MediaItem[] = [];
-      
-      for (const item of mediaItems) {
-        const existingRecord = await this.syncRecords.findByGooglePhotoId(item.id);
-        if (!existingRecord || existingRecord.status === SyncStatus.ERROR) {
-          filteredItems.push(item);
-        }
-      }
-      
-      mediaItems = filteredItems;
-    }
-
-    return mediaItems;
-  }
-
-  /**
-   * Crée les enregistrements de synchronisation
-   */
-  private async createSyncRecords(mediaItems: MediaItem[], options: SyncOptions): Promise<void> {
-    for (const item of mediaItems) {
-      const existingRecord = await this.syncRecords.findByGooglePhotoId(item.id);
-      
-      if (existingRecord && !options.forceResync) {
-        continue;
-      }
-
-      const storagePath = this.cubbit.generateStoragePath(
-        item.filename,
-        item.creationTime,
-        options.albumTitle
-      );
-
-      const recordData: Omit<SyncRecord, 'id' | 'createdAt' | 'updatedAt'> = {
-        googlePhotoId: item.id,
-        filename: item.filename,
-        googleUrl: item.baseUrl,
-        cubbitPath: storagePath,
-        fileSize: this.estimateFileSize(item),
-        mimeType: item.mimeType,
-        createdDate: item.creationTime,
-        status: SyncStatus.PENDING,
-        metadata: {
-          width: item.width,
-          height: item.height,
-          description: item.description,
-          albumTitle: options.albumTitle,
-        },
-      };
-
-      if (existingRecord) {
-        await this.syncRecords.update(existingRecord.id!, recordData);
-      } else {
-        await this.syncRecords.create(recordData);
-      }
-    }
   }
 
   /**
@@ -391,6 +256,12 @@ export class SyncManager {
    */
   private async processRecord(record: SyncRecord, sessionId: number, dryRun: boolean): Promise<void> {
     try {
+      // Simulation : aucun statut n'est modifié, sinon l'élément passerait pour archivé sans l'être
+      if (dryRun) {
+        getLogger().info(`[DRY RUN] ${record.filename} -> ${record.cubbitPath}`);
+        return;
+      }
+
       await this.syncRecords.update(record.id!, { status: SyncStatus.DOWNLOADING });
       
       // Notifier la progression
@@ -398,15 +269,6 @@ export class SyncManager {
         const progress = await this.getCurrentProgress(sessionId);
         progress.currentItem = record.filename;
         this.progressCallback(progress);
-      }
-
-      if (dryRun) {
-        getLogger().info(`[DRY RUN] ${record.filename} -> ${record.cubbitPath}`);
-        await this.syncRecords.update(record.id!, { 
-          status: SyncStatus.SYNCED,
-          syncDate: new Date()
-        });
-        return;
       }
 
       // Vérifier si le fichier existe déjà sur Cubbit
@@ -420,43 +282,16 @@ export class SyncManager {
         return;
       }
 
-      // Déterminer si c'est un fichier Takeout (local) ou Google Photos (URL)
-      const isLocalFile = !record.googleUrl.startsWith('http') && fs.existsSync(record.googleUrl);
-      let sourceFilePath: string;
-
-      if (isLocalFile) {
-        // Fichier Takeout local - utiliser directement le fichier
-        sourceFilePath = record.googleUrl; // googleUrl contient le chemin local pour Takeout
-        getLogger().debug(`Fichier Takeout local: ${sourceFilePath}`);
-      } else {
-        // Fichier Google Photos - télécharger d'abord
-        const tempPath = path.join(
-          this.config.sync.downloadPath,
-          `temp_${record.id}_${record.filename}`
-        );
-
-        const mediaItem: MediaItem = {
-          id: record.googlePhotoId,
-          filename: record.filename,
-          baseUrl: record.googleUrl,
-          mimeType: record.mimeType,
-          creationTime: record.createdDate,
-          productUrl: '',
-        };
-
-        await this.googlePhotos.downloadMediaItem(mediaItem, tempPath);
-        sourceFilePath = tempPath;
+      // googleUrl contient le chemin local du fichier Takeout
+      const sourceFilePath = record.googleUrl;
+      if (!fs.existsSync(sourceFilePath)) {
+        throw new Error(`Fichier source Takeout introuvable: ${sourceFilePath}`);
       }
-      
+
       await this.syncRecords.update(record.id!, { status: SyncStatus.UPLOADING });
 
       // Upload vers Cubbit
       await this.cubbit.uploadFile(sourceFilePath, record.cubbitPath);
-
-      // Nettoyer le fichier temporaire (seulement si c'est un fichier téléchargé)
-      if (!isLocalFile) {
-        await fs.remove(sourceFilePath);
-      }
 
       // Marquer comme synchronisé
       await this.syncRecords.update(record.id!, { 

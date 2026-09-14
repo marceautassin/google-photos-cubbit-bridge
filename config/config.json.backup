@@ -1,12 +1,4 @@
 {
-  "googlePhotos": {
-    "clientId": "${GOOGLE_CLIENT_ID}",
-    "clientSecret": "${GOOGLE_CLIENT_SECRET}",
-    "redirectUri": "http://localhost:3000/auth/callback",
-    "scopes": [
-      "https://www.googleapis.com/auth/photoslibrary.readonly"
-    ]
-  },
   "cubbit": {
     "endpoint": "${CUBBIT_ENDPOINT}",
     "accessKeyId": "${CUBBIT_ACCESS_KEY_ID}",
@@ -16,7 +8,6 @@
     "forcePathStyle": true
   },
   "sync": {
-    "downloadPath": "./temp_downloads",
     "maxConcurrentDownloads": 3,
     "supportedFormats": [
       "jpg",

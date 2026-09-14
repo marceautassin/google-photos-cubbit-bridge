@@ -5,8 +5,6 @@ import { loadConfig, validateConfig } from './config';
 import { initLogger } from './utils/logger';
 import { initDatabase } from './database/connection';
 import * as setupCommand from './commands/setup';
-import * as authCommand from './commands/auth';
-import * as listCommand from './commands/list';
 import * as syncCommand from './commands/sync';
 import * as statusCommand from './commands/status';
 import * as takeoutCommand from './commands/takeout';
@@ -19,7 +17,7 @@ async function main(): Promise<void> {
     // Configuration du programme CLI
     program
       .name('gpb')
-      .description('Google Photos to Cubbit Bridge - Synchronise vos photos Google Photos vers Cubbit')
+      .description('Google Photos to Cubbit Bridge - Archive vos exports Google Takeout vers Cubbit')
       .version('1.0.0');
 
     // Charger la configuration
@@ -33,8 +31,6 @@ async function main(): Promise<void> {
 
     // Enregistrer les commandes
     setupCommand.register(program);
-    authCommand.register(program, config);
-    listCommand.register(program, config);
     syncCommand.register(program, config);
     statusCommand.register(program, config);
     takeoutCommand.register(program, config);

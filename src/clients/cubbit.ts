@@ -224,28 +224,6 @@ export class CubbitClient {
   }
 
   /**
-   * Génère un chemin de stockage basé sur la structure de dossiers
-   */
-  generateStoragePath(filename: string, creationDate: Date, albumTitle?: string): string {
-    const year = creationDate.getFullYear();
-    
-    let basePath = `photos/${year}`;
-    
-    if (albumTitle) {
-      // Nettoyer le titre de l'album pour éviter les caractères problématiques
-      const cleanAlbumTitle = albumTitle
-        .replace(/[<>:"/\\|?*]/g, '_')
-        .replace(/\s+/g, '_')
-        .replace(/_+/g, '_')
-        .replace(/^_+|_+$/g, '');
-      
-      basePath = `albums/${cleanAlbumTitle}`;
-    }
-    
-    return `backup_google_photos/${basePath}/${filename}`;
-  }
-
-  /**
    * Calcule la taille totale des fichiers stockés
    */
   async getTotalStorageSize(prefix: string = ''): Promise<number> {

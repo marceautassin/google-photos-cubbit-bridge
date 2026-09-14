@@ -1,10 +1,4 @@
 export interface AppConfig {
-  googlePhotos: {
-    clientId: string;
-    clientSecret: string;
-    redirectUri: string;
-    scopes: string[];
-  };
   cubbit: {
     endpoint: string;
     accessKeyId: string;
@@ -14,7 +8,6 @@ export interface AppConfig {
     forcePathStyle?: boolean;
   };
   sync: {
-    downloadPath: string;
     maxConcurrentDownloads: number;
     supportedFormats: string[];
     preserveFolderStructure: boolean;
@@ -33,13 +26,4 @@ export interface AppConfig {
     path: string;
     backupPath?: string;
   };
-}
-
-export interface SearchFilters {
-  albumId?: string;
-  dateRange?: {
-    startDate: string;
-    endDate: string;
-  };
-  mediaTypes?: ('PHOTO' | 'VIDEO')[];
 }

@@ -39,26 +39,7 @@ async function setupCommand(options: { reset?: boolean }): Promise<void> {
       console.log(chalk.yellow('Réinitialisation de la configuration...\\n'));
     }
 
-    console.log(chalk.cyan('📋 Configuration Google Photos:'));
-    console.log('Vous devez créer un projet Google Cloud Console et activer l\'API Google Photos Library.');
-    console.log('Visitez: https://console.cloud.google.com/\n');
-
-    const googleClientId = await question(`Client ID Google (actuel: ${config.googlePhotos.clientId || 'non défini'}): `);
-    if (googleClientId.trim()) {
-      config.googlePhotos.clientId = googleClientId.trim();
-    }
-
-    const googleClientSecret = await question(`Client Secret Google (actuel: ${config.googlePhotos.clientSecret ? '***masqué***' : 'non défini'}): `);
-    if (googleClientSecret.trim()) {
-      config.googlePhotos.clientSecret = googleClientSecret.trim();
-    }
-
-    const redirectUri = await question(`URI de redirection (actuel: ${config.googlePhotos.redirectUri}): `);
-    if (redirectUri.trim()) {
-      config.googlePhotos.redirectUri = redirectUri.trim();
-    }
-
-    console.log('\\n' + chalk.cyan('🗃️  Configuration Cubbit:'));
+    console.log(chalk.cyan('🗃️  Configuration Cubbit:'));
     
     const cubbitEndpoint = await question(`Endpoint Cubbit (actuel: ${config.cubbit.endpoint || 'non défini'}): `);
     if (cubbitEndpoint.trim()) {
@@ -112,9 +93,8 @@ async function setupCommand(options: { reset?: boolean }): Promise<void> {
 
     if (errors.length === 0) {
       console.log(chalk.blue('📋 Prochaines étapes:'));
-      console.log('  1. Lancez ' + chalk.cyan('gpb auth login') + ' pour vous authentifier sur Google Photos');
-      console.log('  2. Utilisez ' + chalk.cyan('gpb list albums') + ' pour voir vos albums');
-      console.log('  3. Synchronisez avec ' + chalk.cyan('gpb sync --album \"Nom Album\"') + ' ou ' + chalk.cyan('gpb sync --all'));
+      console.log('  1. Importez une archive avec ' + chalk.cyan('gpb takeout import <chemin-takeout>'));
+      console.log('  2. Envoyez les médias importés vers Cubbit avec ' + chalk.cyan('gpb sync'));
     } else {
       console.log(chalk.yellow('⚠️  Corrigez les erreurs de configuration avant de continuer.'));
     }
