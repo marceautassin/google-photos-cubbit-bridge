@@ -241,7 +241,7 @@ function validateInput(input: PlanInput, config: PlanConfig): void {
 }
 
 /** Répartit les objets du périmètre : médias reconnus, exclusions déclarées, objets non reconnus. */
-function classifyScope(objects: BucketObject[], config: PlanConfig): { media: BucketObject[]; exclusions: ExcludedObject[]; unrecognized: UnrecognizedObject[] } {
+export function classifyScope(objects: BucketObject[], config: PlanConfig): { media: BucketObject[]; exclusions: ExcludedObject[]; unrecognized: UnrecognizedObject[] } {
   const media: BucketObject[] = [];
   const exclusions: ExcludedObject[] = [];
   const unrecognized: UnrecognizedObject[] = [];

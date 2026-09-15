@@ -4,7 +4,7 @@ import { AppConfig } from '../config/types';
 import { SyncManager } from '../sync/sync-manager';
 import { SyncRecordModel, SyncSessionModel } from '../database/models';
 import { SyncStatus } from '../clients/types';
-import { formatBytes } from '../utils/file-utils';
+import { formatBytes } from '../utils/format';
 
 export function register(program: Command, config: AppConfig): void {
   program

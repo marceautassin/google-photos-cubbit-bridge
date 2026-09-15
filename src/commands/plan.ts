@@ -20,7 +20,7 @@ import {
   UNRECOGNIZED_HINT,
   verifyStoredPlan,
 } from '../inventory/repair-plan';
-import { formatBytes } from '../utils/file-utils';
+import { formatBytes } from '../utils/format';
 import { getLogger } from '../utils/logger';
 import { runCommand } from './run-command';
 
@@ -101,12 +101,13 @@ function readIndexState(sourceBucket: string, destinationBucket: string): IndexS
   };
 }
 
-/** Entrée du plan depuis l'index local et la configuration actuels ; refus si le bucket source n'est pas inventorié. */
-function resolveBuckets(config: AppConfig, options: { bucket?: string; destination?: string }): { bucket: string; destination: string } {
+/** Buckets source et dédié : options de la commande, sinon configuration. */
+export function resolveBuckets(config: AppConfig, options: { bucket?: string; destination?: string }): { bucket: string; destination: string } {
   return { bucket: options.bucket ?? config.cubbit.bucket, destination: options.destination ?? config.repair.destinationBucket };
 }
 
-function readPlanInput(config: AppConfig, options: { bucket?: string; destination?: string }): PlanInput {
+/** Entrée du plan depuis l'index local et la configuration actuels ; refus si le bucket source n'est pas inventorié. */
+export function readPlanInput(config: AppConfig, options: { bucket?: string; destination?: string }): PlanInput {
   const { bucket, destination } = resolveBuckets(config, options);
   const index = readIndexState(bucket, destination);
   if (!index) throw new PlanRefusedError(`aucun inventaire local pour le bucket « ${bucket} ». Lancez : gpb inventory scan`);

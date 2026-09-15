@@ -10,6 +10,7 @@ import * as statusCommand from './commands/status';
 import * as takeoutCommand from './commands/takeout';
 import * as inventoryCommand from './commands/inventory';
 import * as planCommand from './commands/plan';
+import * as etatCommand from './commands/etat';
 import { createArchiveCommand } from './commands/archive';
 
 const program = new Command();
@@ -38,6 +39,7 @@ async function main(): Promise<void> {
     takeoutCommand.register(program, config);
     inventoryCommand.register(program, config);
     planCommand.register(program, config);
+    etatCommand.register(program, config);
     program.addCommand(createArchiveCommand());
 
     // Commande par défaut (aide)

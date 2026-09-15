@@ -1,14 +1,18 @@
+/** Unités de taille en français, base 1024. */
+const BYTE_UNITS = ['Ko', 'Mo', 'Go', 'To', 'Po'];
+
 /**
- * Formate un nombre d'octets en format lisible
+ * Formate un nombre d'octets en français : `512 octets`, `1,5 Mo`, `2,3 Go` (base 1024, une décimale au plus).
+ * Valeur négative, `NaN` ou infinie : « taille inconnue ».
  */
 export function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  if (!Number.isFinite(bytes) || bytes < 0) return 'taille inconnue';
+  if (bytes < 1024) return `${formatNumber(bytes)} ${bytes > 1 ? 'octets' : 'octet'}`;
+  let exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), BYTE_UNITS.length);
+  // Une valeur qui s'arrondit à 1024 passe à l'unité suivante : 1 048 575 octets → « 1 Mo », pas « 1 024 Ko ».
+  if (exponent < BYTE_UNITS.length && Math.round((bytes / Math.pow(1024, exponent)) * 10) / 10 >= 1024) exponent++;
+  const value = bytes / Math.pow(1024, exponent);
+  return `${value.toLocaleString('fr-FR', { maximumFractionDigits: 1 })} ${BYTE_UNITS[exponent - 1]}`;
 }
 
 /**
@@ -43,10 +47,10 @@ export function formatDuration(seconds: number): string {
 }
 
 /**
- * Formate un nombre pour l'affichage avec séparateurs de milliers
+ * Formate un nombre avec le séparateur de milliers français (espace fine insécable) : `17 875`.
  */
 export function formatNumber(num: number): string {
-  return num.toLocaleString();
+  return num.toLocaleString('fr-FR');
 }
 
 /**

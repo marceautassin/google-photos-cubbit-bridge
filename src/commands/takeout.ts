@@ -6,7 +6,7 @@ import { AppConfig } from '../config/types';
 import { TakeoutParser } from '../takeout/takeout-parser';
 import { SyncRecordModel } from '../database/models';
 import { SyncStatus } from '../clients/types';
-import { formatBytes } from '../utils/file-utils';
+import { formatBytes } from '../utils/format';
 
 export function register(program: Command, config: AppConfig): void {
   const takeoutCmd = program

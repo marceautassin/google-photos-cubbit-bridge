@@ -4,7 +4,8 @@ import { CubbitClient } from '../clients/cubbit';
 import { SyncRecordModel, SyncSessionModel } from '../database/models';
 import { MediaItem, SyncRecord, SyncSession, SyncStatus } from '../clients/types';
 import { getLogger, logError } from '../utils/logger';
-import { isSupportedFormat, formatBytes } from '../utils/file-utils';
+import { isSupportedFormat } from '../utils/file-utils';
+import { formatBytes } from '../utils/format';
 
 export interface SyncOptions {
   maxConcurrent?: number;

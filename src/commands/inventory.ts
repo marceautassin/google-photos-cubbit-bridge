@@ -16,8 +16,7 @@ import {
 } from '../inventory/duplicates';
 import { InventoryModel, InventoryRun } from '../database/inventory-model';
 import { scanBucket, summarizeInventory } from '../inventory/inventory';
-import { formatBytes } from '../utils/file-utils';
-import { describeError } from '../utils/format';
+import { describeError, formatBytes } from '../utils/format';
 import { getLogger } from '../utils/logger';
 import { runCommand } from './run-command';
 
