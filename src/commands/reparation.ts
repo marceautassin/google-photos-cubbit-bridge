@@ -16,6 +16,7 @@ import {
   CONFIRMATION_LENGTH,
   confirmationMatches,
   executePlan,
+  executionCommandLine,
   ExecutionOverview,
   ExecutionProgress,
   ExecutionRefusedError,
@@ -27,6 +28,8 @@ import { bucketMismatchHint, PlanRefusedError, RepairPlan, verifyStoredPlan } fr
 import { formatBytes, formatNumber } from '../utils/format';
 import { getLogger } from '../utils/logger';
 import { readPlanInput } from './plan';
+import { MAX_INVENTORY_AGE_HOURS } from '../inventory/repair-report';
+import { reportCommand, ReportOptions } from './reparation-rapport';
 import { runCommand } from './run-command';
 
 /**
@@ -80,6 +83,30 @@ export function register(program: Command, config: AppConfig): void {
     .action((options: ExecuteOptions) =>
       runCommand('Exécution du plan :', async () => {
         process.exitCode = await executeCommand(config, options);
+      }),
+    );
+
+  reparationCmd
+    .command('rapport')
+    .description(
+      'Rapport de la réparation depuis l\'index local, sans requête réseau ni écriture : journal rapproché du plan, ' +
+        'contre-métriques et, avec --verifier, vérification de l\'arrivée sur l\'inventaire du bucket dédié. Code 0 ' +
+        'seulement si la réparation est complète et vérifiée conforme : le rapport liste alors les anciens emplacements ' +
+        'à supprimer (par vous, jamais par l\'outil). Exige des inventaires source et dédié refaits après l\'exécution, ' +
+        `de moins de ${MAX_INVENTORY_AGE_HOURS} h`,
+    )
+    .option('--bucket <nom>', 'Bucket source du plan (défaut : bucket de la configuration)')
+    .option('--verifier', 'Vérifier l\'arrivée sur l\'inventaire du bucket dédié (gpb inventory scan --bucket <dédié> après l\'exécution)')
+    .option('--export <fichier>', 'Exporter le rapport complet (.json ou .csv)')
+    .option(
+      '--export-suppression <fichier>',
+      'Seulement si la réparation est attestée : écrire la liste exacte des clés à supprimer (CSV : bucket, clé, taille, ETag, ' +
+        'empreinte du plan, date de l\'inventaire source, date de génération) ; sinon refus, rien écrit ; jamais d\'écrasement ' +
+        'd\'un fichier existant',
+    )
+    .action((options: ReportOptions) =>
+      runCommand('Rapport de la réparation :', async () => {
+        process.exitCode = await reportCommand(config, options);
       }),
     );
 }
@@ -136,8 +163,7 @@ export async function executeCommand(config: AppConfig, options: ExecuteOptions,
 
   if (options.confirmer === undefined) {
     console.log(chalk.yellow('\n🔎 Simulation : rien n\'a été écrit.'));
-    const bucketOption = options.bucket ? ` --bucket ${options.bucket}` : '';
-    console.log(`   Pour exécuter : gpb reparation executer${bucketOption} --confirmer ${plan.id.slice(0, CONFIRMATION_LENGTH)}`);
+    console.log(`   Pour exécuter : ${executionCommandLine(plan.id, options.bucket)}`);
     return 0;
   }
   if (!confirmationMatches(plan.id, options.confirmer)) {

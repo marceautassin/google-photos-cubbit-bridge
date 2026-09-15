@@ -63,6 +63,11 @@ export function linesToWrite(plan: Pick<RepairPlan, 'lines'>): WriteLine[] {
   );
 }
 
+/** Commande qui exécute (ou reprend) le plan. */
+export function executionCommandLine(planId: string, bucket?: string): string {
+  return `gpb reparation executer${bucket ? ` --bucket ${bucket}` : ''} --confirmer ${planId.slice(0, CONFIRMATION_LENGTH)}`;
+}
+
 /** L'empreinte complète, ou au moins ses 12 premiers caractères. */
 export function confirmationMatches(planId: string, value: string | undefined): boolean {
   const given = value?.trim().toLowerCase() ?? '';
@@ -174,7 +179,8 @@ export function summarizeExecution(plan: Pick<RepairPlan, 'lines'>, states: Map<
   return overview;
 }
 
-function isDone(line: WriteLine, states: Map<string, JournalEntry>): boolean {
+/** Ligne faite d'après le journal : état `copie` ou `deja_present`, vers la destination du plan. */
+export function isDone(line: WriteLine, states: Map<string, JournalEntry>): boolean {
   const entry = states.get(line.sourceKey);
   return entry !== undefined && DONE_STATES.has(entry.state) && entry.destination === line.destination;
 }

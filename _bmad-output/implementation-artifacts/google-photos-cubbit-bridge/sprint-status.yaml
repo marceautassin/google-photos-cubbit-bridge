@@ -62,10 +62,10 @@ development_status:
   2-5-restituer-l-etat-de-l-archive-a-la-demande: done
   epic-2-retrospective: optional
 
-  epic-3: in-progress
+  epic-3: done
   3-1-copier-l-archive-vers-le-bucket-dedie-selon-le-plan: done
   3-2-reprendre-une-reparation-interrompue: done
-  3-3-rendre-compte-de-la-reparation: backlog
+  3-3-rendre-compte-de-la-reparation: done
   epic-3-retrospective: optional
 
   epic-4: backlog

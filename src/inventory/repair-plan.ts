@@ -552,6 +552,26 @@ export function assessPlanFreshness(
 }
 
 /**
+ * Contrôles du contenu d'un plan relu de la base, sans lui faire confiance : cohérence avec son empreinte, exécutabilité
+ * recalculée, invariants rejoués sur les lignes relues avec le périmètre `objects` (inventaire source actuel) et les
+ * destinations occupées `occupied`. Partagé par la vérification avant exécution et par le rapport (story 3.3). Pure.
+ */
+export function storedContentProblems(plan: RepairPlan, objects: BucketObject[], occupied: OccupiedDestination[]): string[] {
+  const reasons: string[] = [];
+  if (planFingerprint(plan) !== plan.id) reasons.push('contenu du plan stocké incohérent avec son empreinte');
+  if (!plan.executable || plan.violations.length > 0) {
+    reasons.push(`plan stocké marqué non exécutable (${plan.violations.length} invariant(s) en échec enregistré(s))`);
+  }
+  if (plan.unrecognized.length > 0) reasons.push(`${plan.unrecognized.length} objet(s) non reconnu(s) dans le plan stocké`);
+  if (plan.namingAnomalies.length > 0) reasons.push(`${plan.namingAnomalies.length} anomalie(s) de nommage dans le plan stocké`);
+  const scopeKeys = objectsInScope(objects, plan.config.sourcePrefixes).map((o) => o.key);
+  for (const violation of checkPlanInvariants(plan, scopeKeys, occupied, plan.config)) {
+    reasons.push(`invariant en échec sur le plan stocké : ${violation}`);
+  }
+  return reasons;
+}
+
+/**
  * Vérification complète d'un plan relu de la base avant toute exécution (story 3.1) : raisons de refuser, vide si le
  * plan peut être exécuté. Ne fait confiance à rien de stocké : fraîcheur (index, configuration, dernier refus),
  * cohérence du contenu avec son empreinte, exécutabilité recalculée, invariants rejoués sur les lignes relues, et
@@ -559,17 +579,10 @@ export function assessPlanFreshness(
  */
 export function verifyStoredPlan(plan: RepairPlan, current: PlanInput, lastRefusal: PlanRefusal | null): string[] {
   const config = normalizePlanConfig(current);
-  const reasons = assessPlanFreshness(plan, current.index, config, lastRefusal);
-  if (planFingerprint(plan) !== plan.id) reasons.push('contenu du plan stocké incohérent avec son empreinte');
-  if (!plan.executable || plan.violations.length > 0) {
-    reasons.push(`plan stocké marqué non exécutable (${plan.violations.length} invariant(s) en échec enregistré(s))`);
-  }
-  if (plan.unrecognized.length > 0) reasons.push(`${plan.unrecognized.length} objet(s) non reconnu(s) dans le plan stocké`);
-  if (plan.namingAnomalies.length > 0) reasons.push(`${plan.namingAnomalies.length} anomalie(s) de nommage dans le plan stocké`);
-  const scopeKeys = objectsInScope(current.objects, plan.config.sourcePrefixes).map((o) => o.key);
-  for (const violation of checkPlanInvariants(plan, scopeKeys, current.occupied, plan.config)) {
-    reasons.push(`invariant en échec sur le plan stocké : ${violation}`);
-  }
+  const reasons = [
+    ...assessPlanFreshness(plan, current.index, config, lastRefusal),
+    ...storedContentProblems(plan, current.objects, current.occupied),
+  ];
   try {
     if (buildRepairPlan(current).id !== plan.id) {
       reasons.push('l\'empreinte du plan recalculé depuis l\'index et la configuration actuels diffère de celle du plan stocké');
@@ -669,8 +682,13 @@ export function planToCsv(plan: RepairPlan): string {
       u.sourceKey, bucket, u.size, u.etag, 'non_reconnu', null, null, `extension ${u.extension} non reconnue : ${UNRECOGNIZED_HINT}`,
     ]),
   ];
+  return csvDocument(CSV_HEADER, rows);
+}
+
+/** Document CSV : séparateur « ; », UTF-8 avec BOM pour les tableurs, une ligne d'en-tête. */
+export function csvDocument(header: string[], rows: (string | number | null)[][]): string {
   const bom = String.fromCharCode(0xfeff);
-  return bom + [CSV_HEADER, ...rows].map((row) => row.map(csvField).join(';')).join('\n') + '\n';
+  return bom + [header, ...rows].map((row) => row.map(csvField).join(';')).join('\n') + '\n';
 }
 
 /** Plan complet en JSON, clés en français. */

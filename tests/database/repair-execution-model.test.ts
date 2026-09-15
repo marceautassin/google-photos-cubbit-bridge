@@ -45,6 +45,17 @@ describe('RepairExecutionModel (journal d\'exécution, migrations 7 et 8)', () =
     { sourceKey: 'backup_google_photos/photos/b.jpg', destination: 'quarantaine/backup_google_photos/photos/b.jpg' },
   ];
 
+  it('dernière écriture du journal d\'un plan et plans journalisés (rapport, story 3.3)', () => {
+    const journal = new RepairExecutionModel();
+    expect(journal.lastUpdate('plan-1')).toBeNull();
+    expect(journal.findPlanIds()).toEqual([]);
+    journal.prepare('plan-1', lines, new Date('2026-09-15T10:00:00Z'));
+    journal.record('plan-1', lines[0]!.sourceKey, 'copie', null, true, new Date('2026-09-15T11:00:00Z'));
+    journal.prepare('plan-0', lines, new Date('2026-09-15T12:00:00Z'));
+    expect(journal.lastUpdate('plan-1')).toEqual(new Date('2026-09-15T11:00:00Z'));
+    expect(journal.findPlanIds()).toEqual(['plan-0', 'plan-1']);
+  });
+
   it('prépare les lignes à faire, enregistre les états au fil de l\'eau, sans écraser à la re-préparation', () => {
     const journal = new RepairExecutionModel();
     journal.prepare('plan-1', lines);

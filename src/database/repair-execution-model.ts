@@ -129,6 +129,20 @@ export class RepairExecutionModel implements ExecutionJournal {
     );
   }
 
+  /** Dernière écriture du journal de ce plan (fin de l'exécution, pour le rapport), `null` s'il n'a pas de journal. */
+  lastUpdate(planId: string): Date | null {
+    const row = this.db.prepare('SELECT MAX(updated_at) AS last FROM repair_execution_lines WHERE plan_id = ?').get(planId) as unknown as {
+      last: string | null;
+    };
+    return row.last ? new Date(row.last) : null;
+  }
+
+  /** Empreintes des plans ayant un journal d'exécution. */
+  findPlanIds(): string[] {
+    const rows = this.db.prepare('SELECT DISTINCT plan_id FROM repair_execution_lines ORDER BY plan_id').all() as unknown as { plan_id: string }[];
+    return rows.map((r) => r.plan_id);
+  }
+
   findLock(): ExecutionLock | null {
     const row = this.db
       .prepare('SELECT plan_id, pid, host, acquired_at, last_activity_at FROM repair_execution_lock')
