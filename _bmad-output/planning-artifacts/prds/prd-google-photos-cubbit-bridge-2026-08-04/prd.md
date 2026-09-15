@@ -230,9 +230,12 @@ objets personnels et professionnels vivent à côté, et l'archive photo est ell
 sur les deux mondes. Depuis la suppression des Takeout et des originaux Google, **cette
 archive est l'unique exemplaire**. En conséquence :
 
-- Une fois la migration faite (D3), l'outil n'a d'accès qu'au bucket photo. Le cloisonnement
-  est porté par l'infrastructure — une clé qui ne voit rien d'autre — et non par une
-  vérification de préfixe dans le code.
+- **Cloisonnement porté par le code (révisé le 2026-09-15).** Les clés Cubbit donnent accès à
+  tout l'espace de travail, pas à un seul bucket : le cloisonnement ne peut pas reposer sur
+  l'infrastructure. Toute écriture passe par un unique point d'accès en écriture, qui refuse
+  toute opération hors du bucket dédié et hors des espaces `photos/`, `albums/` et
+  `quarantaine/`, et qui n'expose aucune suppression. `marceau-photos/backups/` contient les
+  exports Takeout récents, eux aussi exemplaires uniques : l'outil n'y écrit jamais.
 - Pendant la migration elle-même, seule phase où l'outil lit le bucket mixte, **l'accès à ce
   bucket est en lecture seule.** Aucune suppression dans `marceau` n'est effectuée par
   l'outil : la source est laissée intacte, et Marceau la supprime lui-même une fois la
@@ -305,8 +308,9 @@ ni affichés dans les journaux ou la sortie console.
   chronologique, `albums/<nom>/<fichier>` pour les albums conservés. Les objets aujourd'hui
   en `photos/AAAA/` sont migrés vers ce schéma.
 - **D3 — Les photos vivent dans un bucket dédié.** Elles quittent le bucket `marceau`, qui
-  mêle aujourd'hui archive photo, documents personnels et données professionnelles. La clé
-  d'accès de l'outil ne voit que ce bucket. La migration se fond dans la réparation
+  mêle aujourd'hui archive photo, documents personnels et données professionnelles. Le bucket
+  dédié s'appelle `marceau-photos` ; il contient déjà `backups/` (exports Takeout d'août 2026,
+  traités en epic 4, après la reprise de l'historique). La migration se fond dans la réparation
   (groupe A) : celle-ci réécrit de toute façon l'emplacement de chaque objet, une copie vers
   un autre bucket ne coûte pas davantage.
 - **D4 — Les deux archives sont unifiées.** Le premier essai manuel

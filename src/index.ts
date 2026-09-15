@@ -11,6 +11,7 @@ import * as takeoutCommand from './commands/takeout';
 import * as inventoryCommand from './commands/inventory';
 import * as planCommand from './commands/plan';
 import * as etatCommand from './commands/etat';
+import * as reparationCommand from './commands/reparation';
 import { createArchiveCommand } from './commands/archive';
 
 const program = new Command();
@@ -34,12 +35,13 @@ async function main(): Promise<void> {
 
     // Enregistrer les commandes
     setupCommand.register(program);
-    syncCommand.register(program, config);
+    syncCommand.register(program);
     statusCommand.register(program, config);
     takeoutCommand.register(program, config);
     inventoryCommand.register(program, config);
     planCommand.register(program, config);
     etatCommand.register(program, config);
+    reparationCommand.register(program, config);
     program.addCommand(createArchiveCommand());
 
     // Commande par défaut (aide)

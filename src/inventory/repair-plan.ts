@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import * as path from 'path';
+import { bucketNameProblem } from '../utils/bucket-name';
 import { isSupportedFormat, normalizeExtension } from '../utils/file-utils';
 import { BucketObject } from '../clients/types';
 import { ObjectDating } from '../database/inventory-date-model';
@@ -235,6 +236,8 @@ function validateInput(input: PlanInput, config: PlanConfig): void {
       'bucket dédié non configuré : renseignez CUBBIT_DESTINATION_BUCKET, repair.destinationBucket ou --destination',
     );
   }
+  const badBucket = bucketNameProblem(input.sourceBucket) ?? bucketNameProblem(input.destinationBucket);
+  if (badBucket) throw new PlanRefusedError(badBucket);
   if (input.destinationBucket === input.sourceBucket) {
     throw new PlanRefusedError(`le bucket dédié doit différer du bucket source (« ${input.sourceBucket} »)`);
   }

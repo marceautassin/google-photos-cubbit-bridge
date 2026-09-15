@@ -49,30 +49,6 @@ export interface SyncSession {
   createdAt?: Date;
 }
 
-export interface FileInfo {
-  path: string;
-  size: number;
-  lastModified: Date;
-  etag?: string;
-}
-
-export interface DownloadProgress {
-  mediaItemId: string;
-  filename: string;
-  bytesDownloaded: number;
-  totalBytes: number;
-  percentage: number;
-  speed?: number; // bytes per second
-}
-
-export interface UploadProgress {
-  filename: string;
-  bytesUploaded: number;
-  totalBytes: number;
-  percentage: number;
-  speed?: number; // bytes per second
-}
-
 /**
  * Objet tel que listé dans un bucket (inventaire, story 2.1).
  */
@@ -107,4 +83,28 @@ export interface ObjectRangeReader {
   readonly bucket: string;
   /** Lit les octets `start` à `end` inclus (en-tête HTTP `Range`). */
   readRange(key: string, start: number, end: number): Promise<Uint8Array>;
+}
+
+/**
+ * Métadonnées d'un objet du bucket dédié, lues par HEAD (story 3.1).
+ */
+export interface DestinationObject {
+  size: number;
+  etag: string | null; // sans guillemets
+}
+
+/**
+ * Seul accès en écriture au stockage (NFR-1, story 3.1) : copie côté serveur du bucket source vers le bucket dédié, et
+ * lecture des métadonnées de destination. Aucune suppression, aucun dépôt d'octets.
+ */
+export interface ArchiveWriter {
+  readonly sourceBucket: string;
+  readonly sourcePrefixes: readonly string[]; // seules clés source copiables
+  readonly destinationBucket: string;
+  /** Vérifie l'existence et l'accès au bucket dédié sans rien écrire ; lève une erreur sinon. */
+  checkAccess(): Promise<void>;
+  /** Métadonnées de l'objet de destination, `null` s'il n'existe pas. */
+  headDestination(key: string): Promise<DestinationObject | null>;
+  /** Copie côté serveur, conditionnée à l'ETag source (la source n'a pas changé depuis l'inventaire). */
+  copyFromSource(sourceKey: string, sourceEtag: string, destinationKey: string): Promise<void>;
 }

@@ -6,6 +6,9 @@ export interface AppConfig {
     bucket: string;
     region?: string;
     forcePathStyle?: boolean;
+    // Paire optionnelle dédiée aux écritures dans le bucket dédié (story 3.1) ; repli sur la paire principale si absente.
+    destinationAccessKeyId?: string;
+    destinationSecretAccessKey?: string;
   };
   sync: {
     maxConcurrentDownloads: number;

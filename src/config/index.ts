@@ -27,6 +27,8 @@ const defaultConfig: AppConfig = {
     bucket: process.env.CUBBIT_BUCKET || 'photos-backup',
     region: process.env.CUBBIT_REGION || 'us-east-1',
     forcePathStyle: true, // Nécessaire pour la plupart des implémentations S3 compatibles
+    destinationAccessKeyId: process.env.CUBBIT_DESTINATION_ACCESS_KEY_ID || '',
+    destinationSecretAccessKey: process.env.CUBBIT_DESTINATION_SECRET_ACCESS_KEY || '',
   },
   sync: {
     maxConcurrentDownloads: parseInt(process.env.MAX_CONCURRENT_DOWNLOADS || '3'),

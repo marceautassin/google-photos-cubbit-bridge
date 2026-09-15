@@ -237,6 +237,34 @@ async function runMigrations(database: DatabaseSync): Promise<void> {
         );
       `,
     },
+    {
+      version: 7,
+      name: 'create_repair_execution_journal',
+      sql: `
+        -- Journal d'exécution du plan de réparation (story 3.1) : état de chaque ligne à écrire, lié à l'empreinte du plan.
+        -- Sans clé étrangère vers repair_plans : régénérer un plan n'efface pas la trace de ce qui a été copié (3.3).
+        -- 'copie' n'est écrit qu'après vérification réussie de la copie.
+        CREATE TABLE IF NOT EXISTS repair_execution_lines (
+          plan_id TEXT NOT NULL,
+          source_key TEXT NOT NULL,
+          destination TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('a_faire', 'copie', 'deja_present', 'echec')),
+          message TEXT,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (plan_id, source_key)
+        );
+
+        -- Verrou d'exécution exclusif (une ligne au plus) : deux exécutions concurrentes pourraient toutes deux
+        -- constater une destination libre puis copier. La clé primaire fait échouer la seconde prise de verrou.
+        CREATE TABLE IF NOT EXISTS repair_execution_lock (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          plan_id TEXT NOT NULL,
+          pid INTEGER NOT NULL,
+          host TEXT NOT NULL,
+          acquired_at TEXT NOT NULL
+        );
+      `,
+    },
   ];
 
   // Créer la table de versioning si elle n'existe pas

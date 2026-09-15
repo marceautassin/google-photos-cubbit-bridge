@@ -339,6 +339,9 @@ describe('refus plutôt que plan partiel', () => {
     expect(() => buildRepairPlan(input({ keptAlbums: ['a/b'] }))).toThrow(PlanRefusedError);
     expect(() => buildRepairPlan(input({ destinationBucket: '' }))).toThrow(/bucket dédié non configuré/);
     expect(() => buildRepairPlan(input({ destinationBucket: 'marceau' }))).toThrow(/différer du bucket source/);
+    expect(() => buildRepairPlan(input({ destinationBucket: 'MARCEAU' }))).toThrow(/nom de bucket « MARCEAU » invalide/);
+    expect(() => buildRepairPlan(input({ destinationBucket: ' marceau' }))).toThrow(/invalide/);
+    expect(() => buildRepairPlan(input({ sourceBucket: 'Marceau' }))).toThrow(/nom de bucket « Marceau » invalide/);
     expect(() => buildRepairPlan(input({ sourcePrefixes: ['vide/'] }))).toThrow(/aucun objet sous/);
   });
 });

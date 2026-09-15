@@ -67,7 +67,7 @@ qu'on **corrige**, pas seulement ce qu'on ajoute.
 
 ### NonFunctional Requirements
 
-- **NFR-1 — Cloisonnement par l'infrastructure** : après migration, la clé de l'outil ne voit que le bucket photo. Le cloisonnement n'est pas une vérification de préfixe dans le code.
+- **NFR-1 — Cloisonnement porté par le code** (révisé le 2026-09-15 : les clés Cubbit donnent accès à tout l'espace de travail) : toute écriture S3 passe par un unique point d'accès qui refuse tout bucket autre que `marceau-photos` et toute clé hors de `photos/`, `albums/` et `quarantaine/`, et qui n'expose aucune suppression. `marceau-photos/backups/` (exports Takeout d'août 2026, exemplaires uniques) n'est jamais écrit.
 - **NFR-2 — Lecture seule sur le bucket mixte** : pendant la migration, l'outil n'effectue aucune suppression dans `marceau`. Marceau supprime les sources lui-même après vérification.
 - **NFR-3 — Simulation obligatoire** : toute opération destructive est précédée d'une simulation inspectable et d'une confirmation explicite.
 - **NFR-4 — Copier avant supprimer** : toute suppression effectuée par l'outil — hors migration, où il n'en fait aucune — n'intervient qu'après confirmation que la copie de destination existe.
@@ -84,9 +84,10 @@ qu'on **corrige**, pas seulement ce qu'on ajoute.
 Pas de document d'architecture. Les contraintes techniques ci-dessous proviennent du PRD, de
 l'addendum et de l'état constaté du code.
 
-- **Prérequis d'infrastructure** : un bucket Cubbit dédié aux photos doit exister, avec une clé
-  d'accès restreinte à ce seul bucket, ainsi qu'une clé **en lecture seule** sur le bucket
-  `marceau` pour la phase de migration. Bloquant pour l'epic 2.
+- **Prérequis d'infrastructure** : bucket dédié `marceau-photos` créé. Cubbit ne permet pas de
+  restreindre une clé à un bucket (accès à tout l'espace de travail) : le cloisonnement est
+  porté par le code (NFR-1). Epic 2 exécutée en réel en lecture seule le 2026-09-15 : plan
+  `6b67339c…` exécutable, 7 690 copies, 114 quarantaines, 4 930 doublons ignorés.
 - **Blocage d'installation** : `better-sqlite3@9.1.1` ne compile pas sous Node 24.13 (`node-gyp`).
   Le projet est aujourd'hui inexécutable — `node_modules` ne peut pas être construit.
 - **Mécanique S3** : le reclassement se fait par `CopyObject` côté serveur puis `DeleteObject`.
@@ -464,10 +465,11 @@ afin d'avoir enfin une archive unique et correctement classée.
 **Alors** chaque objet retenu est copié côté serveur vers sa destination
 **Et** aucun octet ne transite par mon poste
 
-**Étant donné** deux jeux d'identifiants configurés — lecture sur `marceau`, écriture sur le bucket dédié
+**Étant donné** que les clés Cubbit donnent accès à tout l'espace de travail (NFR-1 révisée)
 **Quand** l'exécution démarre
-**Alors** l'outil vérifie qu'il peut écrire dans le bucket dédié avant la première copie
-**Et** il n'utilise jamais les identifiants du bucket source pour écrire
+**Alors** toute écriture passe par un unique point d'accès qui refuse, avant tout appel réseau, un bucket autre que le bucket dédié, une clé hors de `photos/`, `albums/` ou `quarantaine/`, et une clé source hors des préfixes source du plan
+**Et** l'outil vérifie que le bucket dédié existe et est accessible avant la première copie ; une écriture refusée arrête l'exécution à la première copie, sans rien avoir écrit
+**Et** aucune commande de l'outil ne peut écrire dans le bucket source ni supprimer quoi que ce soit
 
 **Étant donné** l'exécution en cours
 **Quand** un objet est copié

@@ -1,7 +1,6 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { AppConfig } from '../config/types';
-import { SyncManager } from '../sync/sync-manager';
 import { SyncRecordModel, SyncSessionModel } from '../database/models';
 import { SyncStatus } from '../clients/types';
 import { formatBytes } from '../utils/format';
@@ -35,8 +34,7 @@ export function register(program: Command, config: AppConfig): void {
     });
 }
 
-async function statusCommand(config: AppConfig, options: any): Promise<void> {
-  const syncManager = new SyncManager(config);
+async function statusCommand(_config: AppConfig, options: any): Promise<void> {
   const syncRecords = new SyncRecordModel();
   const syncSessions = new SyncSessionModel();
 
@@ -44,7 +42,14 @@ async function statusCommand(config: AppConfig, options: any): Promise<void> {
 
   try {
     // Statistiques générales
-    const stats = await syncManager.getSyncStats();
+    // Index local uniquement : l'ancienne lecture du bucket (et le client d'envoi qui la portait) a été retirée en 3.1.
+    const stats = {
+      totalRecords: await syncRecords.countByStatus(),
+      syncedRecords: await syncRecords.countByStatus(SyncStatus.SYNCED),
+      errorRecords: await syncRecords.countByStatus(SyncStatus.ERROR),
+      pendingRecords: await syncRecords.countByStatus(SyncStatus.PENDING),
+      lastSync: (await syncSessions.findLast())?.startTime,
+    };
     
     console.log(chalk.cyan('📋 Statistiques générales:'));
     console.log(`   Total d'enregistrements: ${chalk.white(stats.totalRecords)}`);
@@ -56,10 +61,7 @@ async function statusCommand(config: AppConfig, options: any): Promise<void> {
       console.log(`   Dernière sync: ${chalk.blue(stats.lastSync.toLocaleString('fr-FR'))}`);
     }
 
-    // Statistiques Cubbit
-    console.log('\n' + chalk.cyan('🗃️  Stockage Cubbit:'));
-    console.log(`   Fichiers stockés: ${chalk.white(stats.cubbitStorage.fileCount)}`);
-    console.log(`   Espace utilisé: ${chalk.white(stats.cubbitStorage.totalSizeFormatted)}`);
+    console.log(chalk.gray('   Contenu des buckets : gpb inventory show (dernier inventaire local)'));
 
     // Session en cours
     const lastSession = await syncSessions.findLast();
@@ -125,7 +127,7 @@ async function statusCommand(config: AppConfig, options: any): Promise<void> {
     console.log('\n' + chalk.blue('💡 Actions disponibles:'));
     
     if (stats.pendingRecords > 0) {
-      console.log(`   • ${chalk.cyan('gpb resume')} - Reprendre la synchronisation`);
+      console.log(`   • ${chalk.gray('gpb sync / gpb resume')} - désactivées (archivage des Takeout reconstruit en epic 4)`);
     }
     
     if (stats.errorRecords > 0) {
