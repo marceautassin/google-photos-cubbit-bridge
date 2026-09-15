@@ -7,6 +7,13 @@ import { S3BucketLister } from '../clients/bucket-lister';
 import { S3ObjectRangeReader } from '../clients/object-range-reader';
 import { DateSource, InventoryDateModel, ObjectDating } from '../database/inventory-date-model';
 import { dateInventory, DatingRun, DatingSummary, selectMedia, summarizeDates } from '../inventory/dating';
+import {
+  analyzeDuplicates,
+  DISAMBIGUATION_RULE,
+  DuplicateReport,
+  MediaCopy,
+  SameNameAndSize,
+} from '../inventory/duplicates';
 import { InventoryModel, InventoryRun } from '../database/inventory-model';
 import { scanBucket, summarizeInventory } from '../inventory/inventory';
 import { formatBytes } from '../utils/file-utils';
@@ -49,6 +56,136 @@ export function register(program: Command, config: AppConfig): void {
     .option('--suspects', 'Lister les dates suspectes (futur, antérieures à 2000, ou issues d\'EXIF ModifyDate)')
     .option('--indeterminees', 'Lister les médias à date indéterminée')
     .action((options: DatesOptions) => run(() => datesCommand(config, options)));
+
+  inventoryCmd
+    .command('doublons')
+    .description(
+      'Identifier les doublons (nom + taille + ETag identique) et les collisions de noms par dossier de destination, ' +
+        'depuis l\'inventaire daté local, sans appel réseau',
+    )
+    .option('--bucket <nom>', 'Bucket inventorié (défaut : bucket de la configuration)')
+    .option('--prefix <préfixes...>', 'Restreindre aux clés commençant par l\'un de ces préfixes (défaut : tout l\'inventaire)')
+    .option('--groupes', 'Lister les groupes de doublons (exemplaire conservé et copies en trop)')
+    .option('--collisions', 'Lister les homonymes et les collisions avec les noms désambiguïsés')
+    .option('--incoherences', 'Lister les groupes aux dates divergentes et les contenus différents de même nom et taille')
+    .option('--empreinte', 'Empreinte (ETag) : lister les doublons présumés non confirmables (même nom et taille, ETag absent ou différent)')
+    .action((options: DuplicatesOptions) => run(() => duplicatesCommand(config, options)));
+}
+
+interface DuplicatesOptions {
+  bucket?: string;
+  prefix?: string[];
+  groupes?: boolean;
+  collisions?: boolean;
+  incoherences?: boolean;
+  empreinte?: boolean;
+}
+
+async function duplicatesCommand(config: AppConfig, options: DuplicatesOptions): Promise<void> {
+  const bucket = options.bucket ?? config.cubbit.bucket;
+  const inventoryModel = new InventoryModel();
+  if (!inventoryModel.findRun(bucket)) {
+    console.log(chalk.yellow(`Aucun inventaire local pour le bucket « ${bucket} ». Lancez : gpb inventory scan`));
+    return;
+  }
+  const prefixes = options.prefix ?? [];
+  const media = selectMedia(inventoryModel.findAll(bucket), config.sync.supportedFormats, prefixes);
+  // Aucune destination occupée : le bucket dédié n'est pas encore inventorié (epic 3).
+  const report = analyzeDuplicates(media, new InventoryDateModel().findAll(bucket));
+  getLogger().info(
+    `Doublons du bucket ${bucket} : ${report.groups.length} groupes, ${report.recoverableSize} octets récupérables, ` +
+      `${report.collisions.length} collisions, ${report.etagConflicts.length} conflits d'ETag, ` +
+      `${report.namingAnomalies.length} anomalies de nommage`,
+  );
+  displayDuplicates(report, options, prefixes);
+  if (report.namingAnomalies.length > 0) process.exitCode = 1;
+}
+
+function displayDuplicates(report: DuplicateReport, options: DuplicatesOptions, prefixes: string[]): void {
+  const n = (value: number): string => chalk.white(value.toLocaleString('fr-FR'));
+  const hint = (show: boolean | undefined, count: number, option: string): string =>
+    count > 0 && !show ? chalk.gray(` — détail : ${option}`) : '';
+  const dateMismatches = report.groups.filter((g) => g.dateMismatch);
+  const scope = prefixes.length > 0 ? ` sous ${prefixes.join(', ')}` : '';
+
+  console.log(chalk.blue.bold('🧮 Doublons et collisions de noms (lecture seule, aucun appel réseau)\n'));
+  console.log(chalk.cyan(`📋 ${report.mediaCount.toLocaleString('fr-FR')} médias${scope} — ${n(report.contentCount)} contenus distincts`));
+  if (report.undatedCount > 0) {
+    console.log(chalk.yellow(`   ${n(report.undatedCount)} médias non datés : lancez d'abord « gpb inventory dates »`));
+  }
+
+  console.log('\n' + chalk.cyan('📑 Doublons confirmés (même nom, même taille, même ETag) :'));
+  console.log(`   Groupes : ${n(report.groups.length)}, copies en trop : ${n(report.extraCopyCount)}${hint(options.groupes, report.groups.length, '--groupes')}`);
+  console.log(`   Volume récupérable : ${chalk.white(formatBytes(report.recoverableSize))}`);
+  console.log(
+    `   Doublons présumés non confirmables (ETag absent ou multipart différent, copies conservées) : ` +
+      `${n(report.unconfirmed.length)} groupes, au plus ${chalk.white(formatBytes(report.unconfirmedSize))} — hors volume récupérable` +
+      hint(options.empreinte, report.unconfirmed.length, '--empreinte'),
+  );
+
+  console.log('\n' + chalk.cyan('🏷️  Noms :'));
+  console.log(`   Homonymes (même nom, contenus distincts) : ${n(report.homonyms.length)}`);
+  console.log(
+    `   Collisions dans un même dossier de destination : ${n(report.collisions.length)}` +
+      hint(options.collisions, report.homonyms.length, '--collisions'),
+  );
+  console.log(chalk.gray(`   Règle : ${DISAMBIGUATION_RULE}`));
+  console.log(`   Exemplaires sans date (aucun dossier daté, quarantaine au plan) : ${n(report.withoutFolder.length)}`);
+
+  const incoherenceCount = dateMismatches.length + report.etagConflicts.length;
+  console.log(
+    `\n${incoherenceCount > 0 ? chalk.yellow('⚠️ ') : '   '} Incohérences : ${n(dateMismatches.length)} groupes aux dates divergentes, ` +
+      `${n(report.etagConflicts.length)} contenus différents sous même nom et taille (ETag MD5 différents)` +
+      hint(options.incoherences, incoherenceCount, '--incoherences'),
+  );
+
+  const describe = ({ object, dating }: MediaCopy): string =>
+    `${object.key} ${chalk.gray(`[${dating?.takenAt ?? 'sans date'}, ${dating?.source ?? 'non daté'}, ETag ${object.etag ?? 'absent'}]`)}`;
+  const listCopies = (title: string, sets: SameNameAndSize[]): void => {
+    console.log('\n' + chalk.cyan(`${title} (${sets.length.toLocaleString('fr-FR')}) :`));
+    for (const set of sets) {
+      console.log(`   ${set.name} (${formatBytes(set.size)})`);
+      for (const copy of set.copies) console.log(`     ${describe(copy)}`);
+    }
+  };
+
+  if (options.groupes) {
+    console.log('\n' + chalk.cyan(`Groupes de doublons (${report.groups.length.toLocaleString('fr-FR')}) :`));
+    for (const group of report.groups) {
+      console.log(`   ${group.name} (${formatBytes(group.size)})${group.dateMismatch ? chalk.yellow(' — dates divergentes') : ''}`);
+      console.log(`     conservé : ${describe(group.kept)}`);
+      for (const other of group.others) console.log(`     en trop  : ${describe(other)}`);
+    }
+  }
+  if (options.empreinte) listCopies('Doublons présumés non confirmables', report.unconfirmed);
+  if (options.collisions) {
+    console.log('\n' + chalk.cyan(`Homonymes (${report.homonyms.length.toLocaleString('fr-FR')}) :`));
+    for (const homonym of report.homonyms) {
+      for (const copy of homonym) {
+        const target = report.destinations.get(copy.object.key) ?? report.alreadyArchived.get(copy.object.key);
+        console.log(`   ${describe(copy)} → ${target ?? chalk.yellow('aucune destination (sans date ou anomalie)')}`);
+      }
+      console.log('');
+    }
+    console.log(chalk.cyan(`Collisions (${report.collisions.length.toLocaleString('fr-FR')}) :`));
+    for (const collision of report.collisions) {
+      for (const { copy, finalName } of collision.entries) {
+        console.log(`   ${collision.folder}${finalName ?? chalk.red('(anomalie)')} ← ${copy.object.key}`);
+      }
+    }
+  }
+  if (options.incoherences) {
+    listCopies('Groupes aux dates divergentes', dateMismatches.map((g) => ({ name: g.name, size: g.size, copies: [g.kept, ...g.others] })));
+    listCopies('Contenus différents sous même nom et taille', report.etagConflicts);
+  }
+
+  // Anomalies bloquantes : toujours listées en entier, jamais filtrées.
+  if (report.namingAnomalies.length > 0) {
+    console.log('\n' + chalk.red(`❌ ${report.namingAnomalies.length.toLocaleString('fr-FR')} anomalie(s) de nommage bloquante(s) (aucune destination possible) :`));
+    for (const anomaly of report.namingAnomalies) {
+      console.log(`   ${anomaly.destination} ← ${anomaly.id} — ${anomaly.reason}`);
+    }
+  }
 }
 
 interface DatesOptions {

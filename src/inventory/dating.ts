@@ -134,7 +134,7 @@ function dating(object: BucketObject, source: DateSource, takenAt: LocalDateTime
 }
 
 /** Une datation ne vaut que pour l'objet daté : même clé, même taille, même ETag. */
-function isSameObject(row: ObjectDating | undefined, object: BucketObject): row is ObjectDating {
+export function isSameObject(row: ObjectDating | undefined, object: BucketObject): row is ObjectDating {
   return row !== undefined && row.key === object.key && row.size === object.size && row.etag === object.etag;
 }
 

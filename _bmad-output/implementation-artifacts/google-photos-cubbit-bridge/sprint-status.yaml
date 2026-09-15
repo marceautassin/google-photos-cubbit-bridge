@@ -57,7 +57,7 @@ development_status:
   epic-2: in-progress
   2-1-inventorier-le-bucket-entier: done
   2-2-reconstruire-la-date-de-prise-de-vue-par-cascade-tracee: done
-  2-3-identifier-les-doublons-et-les-collisions-de-noms: backlog
+  2-3-identifier-les-doublons-et-les-collisions-de-noms: done
   2-4-produire-le-plan-de-reparation-inspectable: backlog
   2-5-restituer-l-etat-de-l-archive-a-la-demande: backlog
   epic-2-retrospective: optional
