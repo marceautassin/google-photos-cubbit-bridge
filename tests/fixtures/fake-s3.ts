@@ -9,8 +9,9 @@ export interface FakeObject {
   etag: string; // sans guillemets
 }
 
+/** Erreur de service telle que le SDK la lève : réponse du serveur à la première tentative. */
 const s3Error = (name: string, status: number): Error =>
-  Object.assign(new Error(name), { name, $metadata: { httpStatusCode: status } });
+  Object.assign(new Error(name), { name, $metadata: { httpStatusCode: status, attempts: 1 } });
 
 export class FakeS3 {
   readonly buckets = new Map<string, Map<string, FakeObject>>();
@@ -21,6 +22,10 @@ export class FakeS3 {
   afterCopy: ((bucket: string, key: string) => void) | null = null;
   /** Erreur levée par HEAD sur une clé donnée. */
   headError: ((bucket: string, key: string) => Error | null) | null = null;
+  /** Erreur levée par une copie vers une clé donnée, AVANT toute écriture. */
+  copyError: ((key: string) => Error | null) | null = null;
+  /** Destinations écrasées par une copie (clé déjà présente) : doit rester vide. */
+  readonly overwrites: string[] = [];
 
   createBucket(bucket: string): void {
     if (!this.buckets.has(bucket)) this.buckets.set(bucket, new Map());
@@ -47,8 +52,12 @@ export class FakeS3 {
     return this.commands.map((c) => (c as object).constructor.name);
   }
 
-  send = jest.fn(async (command: unknown): Promise<unknown> => {
+  /** Options de chaque envoi (signal d'abandon à l'échéance). */
+  readonly options: unknown[] = [];
+
+  send = jest.fn(async (command: unknown, options?: unknown): Promise<unknown> => {
     this.commands.push(command);
+    this.options.push(options);
     if (command instanceof HeadBucketCommand) {
       if (!this.buckets.has(command.input.Bucket!)) throw s3Error('NotFound', 404);
       return {};
@@ -69,6 +78,9 @@ export class FakeS3 {
       const source = this.get(sourceBucket, sourceKey);
       if (!source) throw s3Error('NoSuchKey', 404);
       if (CopySourceIfMatch !== `"${source.etag}"`) throw s3Error('PreconditionFailed', 412);
+      const error = this.copyError?.(Key!);
+      if (error) throw error;
+      if (this.get(Bucket!, Key!)) this.overwrites.push(Key!);
       this.put(Bucket!, Key!, { size: source.size, etag: this.copyEtag(source, Key!) });
       this.afterCopy?.(Bucket!, Key!);
       return { CopyObjectResult: {} };

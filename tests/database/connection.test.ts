@@ -36,14 +36,19 @@ describe('couche base de données (node:sqlite)', () => {
     const row = getDatabase().prepare('SELECT MAX(version) AS version FROM schema_version').get() as {
       version: number;
     };
-    expect(row.version).toBe(7);
+    expect(row.version).toBe(8);
+  });
+
+  it('écritures durables : synchronous = FULL (une ligne copie_en_cours validée survit à une coupure de courant)', () => {
+    const row = getDatabase().prepare('PRAGMA synchronous').get() as { synchronous: number };
+    expect(row.synchronous).toBe(2); // 0 OFF, 1 NORMAL, 2 FULL, 3 EXTRA
   });
 
   it('est idempotente à la réouverture', async () => {
     closeDatabase();
     await initDatabase({ path: dbPath });
     const row = getDatabase().prepare('SELECT COUNT(*) AS n FROM schema_version').get() as { n: number };
-    expect(row.n).toBe(7);
+    expect(row.n).toBe(8);
   });
 
   it('crée, relit et met à jour un enregistrement avec champs optionnels absents', async () => {

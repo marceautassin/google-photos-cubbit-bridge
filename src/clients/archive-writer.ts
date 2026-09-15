@@ -5,6 +5,7 @@
 import { CopyObjectCommand, HeadBucketCommand, HeadObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { ALBUMS_ROOT, CHRONO_ROOT, QUARANTINE_ROOT } from '../inventory/repair-plan';
 import { bucketNameProblem } from '../utils/bucket-name';
+import { S3_SEND_DEADLINE_MS } from './s3-client';
 import { ArchiveWriter, DestinationObject } from './types';
 
 /** Espaces du bucket dédié où l'outil peut écrire. Tout le reste (dont `backups/`) est refusé. */
@@ -90,9 +91,9 @@ export function encodeCopySource(bucket: string, key: string): string {
   return `${bucket}/${key.split('/').map(encodeURIComponent).join('/')}`;
 }
 
-const statusOf = (error: unknown): { name?: string; status?: number } => {
-  const e = error as { name?: string; $metadata?: { httpStatusCode?: number } } | null;
-  return { name: e?.name, status: e?.$metadata?.httpStatusCode };
+const statusOf = (error: unknown): { name?: string; status?: number; attempts?: number } => {
+  const e = error as { name?: string; $metadata?: { httpStatusCode?: number; attempts?: number } } | null;
+  return { name: e?.name, status: e?.$metadata?.httpStatusCode, attempts: e?.$metadata?.attempts };
 };
 
 /** Objet absent : 404 (`NotFound` pour un HEAD, qui n'a pas de corps d'erreur). */
@@ -107,6 +108,22 @@ export function isPreconditionFailed(error: unknown): boolean {
   return name === 'PreconditionFailed' || status === 412;
 }
 
+/**
+ * La copie n'a certainement rien écrit (story 3.2) :
+ * - refus du garde (`WriteRefusedError`) : levé avant tout appel réseau ;
+ * - réponse du serveur à une tentative unique (`$metadata.attempts` = 1) qui refuse la copie avant de l'effectuer :
+ *   412 (source modifiée : condition évaluée avant la copie), 403 (droits vérifiés avant toute opération), 404
+ *   `NoSuchKey` / `NoSuchBucket` (source ou bucket introuvable : rien à copier).
+ * Si le SDK a fait plusieurs tentatives, une tentative précédente (délai dépassé, réponse perdue) a pu écrire : doute.
+ * Toute autre erreur (réseau, délai, 5xx, abandon) laisse un doute : la copie a pu aboutir côté serveur.
+ */
+export function isCopyRefusedBeforeWrite(error: unknown): boolean {
+  if (error instanceof WriteRefusedError) return true;
+  const { name, status, attempts } = statusOf(error);
+  if (attempts !== 1) return false;
+  return isPreconditionFailed(error) || name === 'AccessDenied' || status === 403 || name === 'NoSuchKey' || name === 'NoSuchBucket';
+}
+
 const unquote = (etag: string | undefined): string | null => (etag ? etag.replace(/^"|"$/g, '') : null);
 
 export class S3ArchiveWriter implements ArchiveWriter {
@@ -114,9 +131,11 @@ export class S3ArchiveWriter implements ArchiveWriter {
   readonly sourcePrefixes: readonly string[];
   readonly destinationBucket: string;
 
+  /** `sendDeadlineMs` : échéance de chaque envoi, retentatives comprises (injectée par les tests). */
   constructor(
     private readonly client: Pick<S3Client, 'send'>,
     scope: WriterScope,
+    private readonly sendDeadlineMs: number = S3_SEND_DEADLINE_MS,
   ) {
     refuseIf(scopeProblem(scope));
     this.sourceBucket = scope.sourceBucket;
@@ -126,14 +145,14 @@ export class S3ArchiveWriter implements ArchiveWriter {
 
   async checkAccess(): Promise<void> {
     // Bucket dédié existant et accessible (un 404 ici est une erreur, pas une absence d'objet), puis HEAD d'une clé.
-    await this.client.send(new HeadBucketCommand({ Bucket: this.destinationBucket }));
+    await this.client.send(new HeadBucketCommand({ Bucket: this.destinationBucket }), this.deadline());
     await this.headDestination(ACCESS_PROBE_KEY);
   }
 
   async headDestination(key: string): Promise<DestinationObject | null> {
     refuseIf(destinationProblem(this.destinationBucket, key, this));
     try {
-      const response = await this.client.send(new HeadObjectCommand({ Bucket: this.destinationBucket, Key: key }));
+      const response = await this.client.send(new HeadObjectCommand({ Bucket: this.destinationBucket, Key: key }), this.deadline());
       if (response.ContentLength === undefined) {
         throw new Error(`Réponse S3 incomplète : taille absente pour ${key}`);
       }
@@ -155,6 +174,16 @@ export class S3ArchiveWriter implements ArchiveWriter {
         CopySource: encodeCopySource(this.sourceBucket, sourceKey),
         CopySourceIfMatch: `"${unquote(sourceEtag)}"`,
       }),
+      this.deadline(),
     );
+  }
+
+  /**
+   * Signal d'abandon à l'échéance : borne la durée d'un envoi côté client, donc d'une ligne (seuil de levée du verrou).
+   * Limite : une copie déjà entièrement reçue par le serveur peut aboutir après l'abandon ; l'échéance ne borne pas
+   * la date d'écriture côté serveur.
+   */
+  private deadline(): { abortSignal: AbortSignal } {
+    return { abortSignal: AbortSignal.timeout(this.sendDeadlineMs) };
   }
 }

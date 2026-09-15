@@ -5,11 +5,19 @@ import {
   ACCESS_PROBE_KEY,
   destinationProblem,
   encodeCopySource,
+  isCopyRefusedBeforeWrite,
   S3ArchiveWriter,
   sourceKeyProblem,
   WriteRefusedError,
   WriterScope,
 } from '../../src/clients/archive-writer';
+import {
+  createS3Client,
+  S3_CONNECTION_TIMEOUT_MS,
+  S3_MAX_ATTEMPTS,
+  S3_REQUEST_TIMEOUT_MS,
+  S3_SEND_DEADLINE_MS,
+} from '../../src/clients/s3-client';
 import { FakeS3 } from '../fixtures/fake-s3';
 
 const PREFIXES = ['backup_google_photos/photos/', '2_Personnel/Photos/google_photos/'];
@@ -130,6 +138,67 @@ describe('S3ArchiveWriter : requêtes', () => {
   });
 });
 
+describe('délais des requêtes S3 (story 3.2)', () => {
+  it('le client S3 porte des délais explicites de connexion et d\'inactivité, et le nombre de tentatives', async () => {
+    const client = createS3Client({ endpoint: 'https://essai.invalid', accessKeyId: 'id', secretAccessKey: 'secret', bucket: 'marceau' } as never);
+    expect(await client.config.maxAttempts()).toBe(S3_MAX_ATTEMPTS);
+    // Configuration résolue du gestionnaire HTTP (champ interne du SDK, lu en test seulement).
+    const handler = client.config.requestHandler as unknown as { configProvider: Promise<{ requestTimeout?: number; connectionTimeout?: number }> };
+    await expect(handler.configProvider).resolves.toMatchObject({ requestTimeout: S3_REQUEST_TIMEOUT_MS, connectionTimeout: S3_CONNECTION_TIMEOUT_MS });
+    expect(S3_REQUEST_TIMEOUT_MS).toBeGreaterThan(0);
+    expect(S3_CONNECTION_TIMEOUT_MS).toBeGreaterThan(0);
+    client.destroy();
+  });
+
+  it('chaque envoi du point d\'accès porte un signal d\'abandon à l\'échéance (HEAD bucket, HEAD, copie)', async () => {
+    const s3 = new FakeS3();
+    s3.createBucket('marceau-photos');
+    s3.put('marceau', SOURCE_KEY, { size: 10, etag: md5 });
+    const writer = new S3ArchiveWriter(s3.asClient(), scope);
+    await writer.checkAccess();
+    await writer.copyFromSource(SOURCE_KEY, md5, 'photos/2016/2016-02/IMG_0005.JPG');
+    expect(s3.options).toHaveLength(3);
+    for (const options of s3.options) {
+      expect((options as { abortSignal: AbortSignal }).abortSignal).toBeInstanceOf(AbortSignal);
+      expect((options as { abortSignal: AbortSignal }).abortSignal.aborted).toBe(false);
+    }
+    expect(S3_SEND_DEADLINE_MS).toBe(970_000);
+  });
+
+  it('une requête bloquée (TCP mort après veille) est abandonnée à l\'échéance', async () => {
+    const hanging = {
+      send: (_command: unknown, options?: { abortSignal?: AbortSignal }): Promise<never> =>
+        new Promise((_resolve, reject) =>
+          options?.abortSignal?.addEventListener('abort', () => reject(Object.assign(new Error('Request aborted'), { name: 'AbortError' }))),
+        ),
+    };
+    const writer = new S3ArchiveWriter(hanging as never, scope, 5);
+    await expect(writer.copyFromSource(SOURCE_KEY, md5, 'photos/a.jpg')).rejects.toThrow('Request aborted');
+  });
+});
+
+describe('isCopyRefusedBeforeWrite : la copie n\'a certainement rien écrit', () => {
+  const err = (name: string, status?: number, attempts?: number): Error =>
+    Object.assign(new Error(name), { name, $metadata: { httpStatusCode: status, attempts } });
+  it.each([
+    ['refus du garde', true, new WriteRefusedError('clé hors des espaces')],
+    ['412 à la première tentative', true, err('PreconditionFailed', 412, 1)],
+    ['403 AccessDenied', true, err('AccessDenied', 403, 1)],
+    ['403 sans nom', true, err('Forbidden', 403, 1)],
+    ['404 NoSuchKey', true, err('NoSuchKey', 404, 1)],
+    ['404 NoSuchBucket', true, err('NoSuchBucket', 404, 1)],
+    ['412 après retentatives du SDK (une tentative a pu écrire)', false, err('PreconditionFailed', 412, 2)],
+    ['403 sans nombre de tentatives connu', false, err('AccessDenied', 403)],
+    ['500', false, err('InternalError', 500, 1)],
+    ['503 SlowDown', false, err('SlowDown', 503, 3)],
+    ['coupure réseau', false, Object.assign(new Error('socket hang up'), { name: 'TimeoutError', code: 'ECONNRESET' })],
+    ['abandon à l\'échéance', false, Object.assign(new Error('Request aborted'), { name: 'AbortError' })],
+    ['404 générique', false, err('NotFound', 404, 1)],
+  ])('%s → rien écrit : %s', (_label, expected, error) => {
+    expect(isCopyRefusedBeforeWrite(error)).toBe(expected);
+  });
+});
+
 describe('encodeCopySource', () => {
   it('encode espaces, &, #, +, ?, accents, et conserve les /', () => {
     expect(encodeCopySource('marceau', '2_Personnel/Photos/google_photos/Été 2019 & co #1+2?.jpg')).toBe(
@@ -172,8 +241,14 @@ const STATIC_IMPORT = /\b(?:import|export)\s+(?:type\s+)?([^;]*?)\s*\bfrom\s*(['
 /** Noms de commandes ou d'outils d'écriture. */
 const WRITE_NAME =
   /\b(?:Put|Delete|Copy|Create|Restore|Upload|CompleteMultipart|UploadPart|AbortMultipart)[A-Za-z0-9]*\b|\b[A-Za-z0-9]*(?:Acl|Policy|Lifecycle|Versioning)[A-Za-z0-9]*Command\b/g;
-/** Mots qui ressemblent à un nom d'écriture sans en être : balise EXIF lue par la datation (story 2.2). */
-const NOT_WRITE_NAMES = new Set(['CreateDate']);
+/**
+ * Mots qui ressemblent à un nom d'écriture sans en être, admis dans les seuls fichiers qui en ont besoin : la balise EXIF
+ * `CreateDate`, lue par la datation (story 2.2) et citée par le rang de fiabilité des dates (story 2.3).
+ */
+const NOT_WRITE_NAMES: Record<string, ReadonlySet<string>> = {
+  'inventory/dating.ts': new Set(['CreateDate']),
+  'inventory/duplicates.ts': new Set(['CreateDate']),
+};
 const COMMAND_NAME = /\b[A-Z][A-Za-z0-9]*Command\b/g;
 const KEYWORDS = new Set(['as', 'type', 'from', 'import', 'export', 'default']);
 
@@ -201,7 +276,7 @@ function analyzeSources(sources: Source[]): string[] {
       if (extra.length > 0) violations.push(`${file} : commandes hors copie et HEAD : ${extra.join(', ')}`);
       if (/Delete|Put[A-Z]|Upload|GetObject|lib-storage/.test(text)) violations.push(`${file} : mention de suppression, dépôt ou lecture d'objet`);
     } else {
-      const writes = unique(text.match(WRITE_NAME) ?? []).filter((name) => !NOT_WRITE_NAMES.has(name));
+      const writes = unique(text.match(WRITE_NAME) ?? []).filter((name) => !NOT_WRITE_NAMES[file]?.has(name));
       if (writes.length > 0) violations.push(`${file} : nom d'écriture hors du point d'accès : ${writes.join(', ')}`);
       const extra = commands.filter((c) => !READ_COMMANDS.has(c));
       if (extra.length > 0) violations.push(`${file} : commandes S3 hors de la liste de lecture : ${extra.join(', ')}`);
@@ -248,6 +323,15 @@ describe('analyse statique des sources : aucune suppression, une seule écriture
     ['nom d\'écriture en commentaire', '// on pourrait appeler CopyObject ici'],
   ])('détecte une source piégée : %s', (_label, text) => {
     expect(analyzeSources([{ file: 'commands/evil.ts', text }])).not.toEqual([]);
+  });
+
+  it('exception CreateDate : admise dans les fichiers de datation, signalée partout ailleurs', () => {
+    const text = "const TAG = 'CreateDate';";
+    expect(analyzeSources([{ file: 'inventory/dating.ts', text }])).toEqual([]);
+    expect(analyzeSources([{ file: 'inventory/duplicates.ts', text }])).toEqual([]);
+    for (const file of ['commands/evil.ts', 'inventory/plan-execution.ts', 'clients/bucket-lister.ts']) {
+      expect(analyzeSources([{ file, text }])).toEqual([`${file} : nom d'écriture hors du point d'accès : CreateDate`]);
+    }
   });
 
   it('détecte une commande en trop dans le point d\'accès lui-même', () => {

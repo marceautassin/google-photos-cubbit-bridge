@@ -1,3 +1,4 @@
+import { CopyObjectCommand } from '@aws-sdk/client-s3';
 import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
@@ -14,7 +15,7 @@ import { AppConfig } from '../../src/config/types';
 import { closeDatabase, getDatabase, initDatabase } from '../../src/database/connection';
 import { InventoryDateModel, ObjectDating } from '../../src/database/inventory-date-model';
 import { InventoryModel } from '../../src/database/inventory-model';
-import { currentOwner, RepairExecutionModel } from '../../src/database/repair-execution-model';
+import { currentOwner, LOCK_IDLE_MINUTES, RepairExecutionModel } from '../../src/database/repair-execution-model';
 import { RepairPlanModel } from '../../src/database/repair-plan-model';
 import { buildRepairPlan, RepairPlan } from '../../src/inventory/repair-plan';
 import { FakeS3 } from '../fixtures/fake-s3';
@@ -231,16 +232,38 @@ describe('gpb reparation executer', () => {
       expect(text()).toMatch('tourne encore');
     });
 
-    it('verrou périmé : refus explicite, puis levée par --lever-verrou et exécution', async () => {
+    it('verrou périmé : refus explicite ; levée refusée tant que l\'activité est récente, puis levée et exécution', async () => {
       const plan = seedPlan();
-      new RepairExecutionModel().acquireLock(plan.id, { pid: 2 ** 22 + 12345, host: currentOwner().host });
-      expect(await executeCommand(config, { confirmer: plan.id }, deps)).toBe(1);
+      const lockedAt = new Date('2026-09-15T20:00:00.000Z');
+      new RepairExecutionModel().acquireLock(plan.id, { pid: 2 ** 22 + 12345, host: currentOwner().host }, () => false, lockedAt);
+      const at = (minutes: number): (() => Date) => () => new Date(lockedAt.getTime() + minutes * 60_000);
+      expect(await executeCommand(config, { confirmer: plan.id }, { ...deps, now: at(1) })).toBe(1);
       expect(text()).toMatch('verrou d\'exécution périmé');
       expect(text()).toMatch('--lever-verrou');
+      expect(await executeCommand(config, { confirmer: plan.id, leverVerrou: true }, { ...deps, now: at(LOCK_IDLE_MINUTES - 1) })).toBe(1);
+      expect(text()).toMatch(`verrou non levé : dernière activité il y a ${LOCK_IDLE_MINUTES - 1} min`);
       expect(s3.send).not.toHaveBeenCalled();
-      expect(await executeCommand(config, { confirmer: plan.id, leverVerrou: true }, deps)).toBe(0);
-      expect(text()).toMatch('Verrou levé');
+      expect(await executeCommand(config, { confirmer: plan.id, leverVerrou: true }, { ...deps, now: at(LOCK_IDLE_MINUTES) })).toBe(0);
+      expect(text()).toMatch(`Verrou levé : processus ${2 ** 22 + 12345} sur ${currentOwner().host}`);
+      expect(text()).toMatch(`dernière activité le ${lockedAt.toISOString()}`);
       expect(new RepairExecutionModel().findLock()).toBeNull();
+    });
+
+    it('activité rafraîchie à chaque ligne ; verrou levé pendant l\'exécution → arrêt « verrou perdu », code 1', async () => {
+      const plan = seedPlan();
+      let tick = 0;
+      const clock = (): Date => new Date(Date.UTC(2026, 8, 15, 20, tick++));
+      const activity: Date[] = [];
+      s3.afterCopy = () => {
+        const lock = new RepairExecutionModel().findLock();
+        if (lock) activity.push(lock.lastActivityAt);
+        if (activity.length === 2) getDatabase().exec('DELETE FROM repair_execution_lock');
+      };
+      expect(await executeCommand(config, { confirmer: plan.id }, { ...deps, now: clock })).toBe(1);
+      expect(activity).toHaveLength(2);
+      expect(activity[1]!.getTime()).toBeGreaterThan(activity[0]!.getTime());
+      expect(text()).toMatch('verrou d\'exécution perdu');
+      expect(copyCount()).toBe(2);
     });
 
     it('verrou libéré aussi sur refus en cours d\'exécution (bucket dédié inaccessible)', async () => {
@@ -249,6 +272,61 @@ describe('gpb reparation executer', () => {
       expect(await executeCommand(config, { confirmer: plan.id }, deps)).toBe(1);
       expect(text()).toMatch('accès au bucket dédié');
       expect(new RepairExecutionModel().findLock()).toBeNull();
+    });
+  });
+
+  describe('reprise (story 3.2)', () => {
+    it('second Ctrl-C sur une vidéo multipart dont Cubbit change l\'ETag : la relance affiche la reprise et termine sans recopier', async () => {
+      const plan = seedPlan();
+      s3.copyEtag = (source) => (source.etag.includes('-') ? md5('9') : source.etag);
+      // Second Ctrl-C : sortie immédiate. Le processus est mort : plus aucune écriture de journal ni requête n'aboutit.
+      let dead = false;
+      const exit = jest.spyOn(process, 'exit').mockImplementation(((): void => {
+        dead = true;
+      }) as never);
+      const record = RepairExecutionModel.prototype.record;
+      jest.spyOn(RepairExecutionModel.prototype, 'record').mockImplementation(function (this: RepairExecutionModel, ...args) {
+        if (dead) throw new Error('processus tué');
+        return record.apply(this, args);
+      });
+      s3.afterCopy = (_bucket, key) => {
+        if (key.startsWith('albums/')) {
+          process.emit('SIGINT');
+          process.emit('SIGINT');
+          throw new Error('processus tué');
+        }
+      };
+      await expect(executeCommand(config, { confirmer: plan.id }, deps)).rejects.toThrow('processus tué');
+      expect(exit).toHaveBeenCalledWith(130);
+      jest.mocked(RepairExecutionModel.prototype.record).mockRestore();
+      const before = new RepairExecutionModel().findStates(plan.id);
+      expect([...before.values()].filter((e) => e.state === 'copie_en_cours')).toHaveLength(1);
+
+      s3.afterCopy = null;
+      output.length = 0;
+      const copiesBefore = copyCount();
+      expect(await executeCommand(config, { confirmer: plan.id }, deps)).toBe(0);
+      expect(text()).toMatch('Reprise d\'une exécution précédente de ce plan');
+      expect(text()).toMatch(/copies en cours, à vérifier .*: 1/);
+      expect(text()).toMatch(/Copies d'une exécution précédente vérifiées à la reprise \(non recopiées\) : 1/);
+      expect(text()).toMatch('Plan exécuté');
+      // Une seule copie de la vidéo, toutes exécutions confondues.
+      expect(s3.commands.filter((c) => c instanceof CopyObjectCommand && c.input.Key!.startsWith('albums/'))).toHaveLength(1);
+      expect(copyCount()).toBe(copiesBefore + [...before.values()].filter((e) => e.state === 'a_faire').length);
+      expect(s3.overwrites).toEqual([]);
+      expect([...new RepairExecutionModel().findStates(plan.id).values()].map((e) => e.state)).toEqual(['copie', 'copie', 'copie']);
+    });
+
+    it('arrêt de sûreté précédent : la relance l\'affiche au début et s\'arrête à nouveau sur la même ligne', async () => {
+      const plan = seedPlan();
+      s3.put(DEST, 'photos/2016/2016-02/IMG_0005.JPG', { size: 1, etag: md5('x') });
+      expect(await executeCommand(config, { confirmer: plan.id }, deps)).toBe(1);
+      output.length = 0;
+      expect(await executeCommand(config, { confirmer: plan.id }, deps)).toBe(1);
+      expect(text()).toMatch(/en échec, à retenter : 1/);
+      expect(text()).toMatch(/⚠️ {2}backup_google_photos\/photos\/2016\/IMG_0005.JPG → photos\/2016\/2016-02\/IMG_0005.JPG : destination déjà occupée/);
+      expect(text()).toMatch('Arrêt de sûreté sur backup_google_photos/photos/2016/IMG_0005.JPG');
+      expect(s3.get(DEST, 'photos/2016/2016-02/IMG_0005.JPG')).toEqual({ size: 1, etag: md5('x') });
     });
   });
 
@@ -285,7 +363,7 @@ describe('gpb reparation executer', () => {
         if (!emitted) {
           emitted = true;
           process.emit('SIGINT');
-          // Au second signal, la ligne en cours n'est pas encore vérifiée : elle doit rester « a_faire ».
+          // Au second signal, la ligne en cours n'est pas encore vérifiée : elle ne doit pas être « copie ».
           statesAtSecondSignal.push(...[...new RepairExecutionModel().findStates(plan.id).values()].map((e) => e.state));
           process.emit('SIGINT');
         }
@@ -293,7 +371,8 @@ describe('gpb reparation executer', () => {
       await executeCommand(config, { confirmer: plan.id }, deps);
       expect(exit).toHaveBeenCalledWith(130);
       expect(lockAtExit).toEqual([null, 130]);
-      expect(statesAtSecondSignal).toEqual(['a_faire', 'a_faire', 'a_faire']);
+      // Story 3.2 : la ligne en cours est « copie_en_cours » (copie envoyée, non vérifiée), jamais « copie ».
+      expect(statesAtSecondSignal.sort()).toEqual(['a_faire', 'a_faire', 'copie_en_cours']);
       expect(text()).not.toMatch('copie en échec');
       expect(process.listenerCount('SIGINT')).toBe(listeners);
     });

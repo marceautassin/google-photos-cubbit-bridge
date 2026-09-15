@@ -1,5 +1,5 @@
 import { CopyObjectCommand, HeadBucketCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
-import { S3ArchiveWriter } from '../../src/clients/archive-writer';
+import { S3ArchiveWriter, WriteRefusedError } from '../../src/clients/archive-writer';
 import {
   confirmationMatches,
   executePlan,
@@ -45,21 +45,47 @@ function planOf(lines: PlanLine[], id = 'a'.repeat(64)): RepairPlan {
   };
 }
 
+/** Arrêt brutal simulé (`kill -9`, extinction) : plus rien n'est journalisé ni envoyé ensuite. */
+class Killed extends Error {
+  constructor() {
+    super('processus tué');
+    this.name = 'Killed';
+  }
+}
+
 /** Journal en mémoire, même contrat que `RepairExecutionModel` (testé à part sur base temporaire). */
 class MemoryJournal implements ExecutionJournal {
   readonly rows = new Map<string, Map<string, JournalEntry>>();
+  /** Processus tué : toute écriture échoue. */
+  killed = false;
+  /** Tue le processus juste avant (`persisted` faux) ou juste après (`persisted` vrai) l'écriture choisie. */
+  killOn: ((sourceKey: string, state: ExecutionState, persisted: boolean) => boolean) | null = null;
   prepare(planId: string, lines: { sourceKey: string; destination: string }[]): void {
     const plan = this.rows.get(planId) ?? new Map<string, JournalEntry>();
-    for (const l of lines) if (!plan.has(l.sourceKey)) plan.set(l.sourceKey, { destination: l.destination, state: 'a_faire', message: null });
+    for (const l of lines) {
+      if (!plan.has(l.sourceKey)) plan.set(l.sourceKey, { destination: l.destination, state: 'a_faire', copyAttempted: false, message: null });
+    }
     this.rows.set(planId, plan);
   }
   findStates(planId: string): Map<string, JournalEntry> {
     return new Map(this.rows.get(planId) ?? []);
   }
-  record(planId: string, sourceKey: string, state: ExecutionState, message: string | null): void {
+  record(planId: string, sourceKey: string, state: ExecutionState, message: string | null, copyAttempted?: boolean): void {
+    const kill = (persisted: boolean): void => {
+      if (this.killOn?.(sourceKey, state, persisted)) {
+        this.killed = true;
+        throw new Killed();
+      }
+    };
+    if (this.killed) throw new Killed();
+    kill(false);
     const entry = this.rows.get(planId)?.get(sourceKey);
     if (!entry) throw new Error('ligne absente');
-    this.rows.get(planId)!.set(sourceKey, { ...entry, state, message });
+    this.rows.get(planId)!.set(sourceKey, { ...entry, state, message, copyAttempted: copyAttempted ?? entry.copyAttempted });
+    kill(true);
+  }
+  entry(planId: string, key: string): JournalEntry | undefined {
+    return this.rows.get(planId)?.get(key);
   }
   state(planId: string, key: string): ExecutionState | undefined {
     return this.rows.get(planId)?.get(key)?.state;
@@ -105,7 +131,7 @@ describe('executePlan : exécution nominale', () => {
     const progress: number[] = [];
     const result = await executePlan(plan, { writer, journal, onProgress: (p) => progress.push(p.remaining) });
 
-    expect(result).toEqual({ copied: { count: 3, size: 350 }, alreadyPresent: 0, skipped: 0, remaining: 0, stop: null, interrupted: false });
+    expect(result).toEqual({ copied: { count: 3, size: 350 }, recovered: 0, alreadyPresent: 0, skipped: 0, remaining: 0, stop: null, interrupted: false });
     expect(progress).toEqual([2, 1, 0]);
     expect(s3.keys(DEST)).toEqual([
       `quarantaine/${K.c}`,
@@ -330,7 +356,7 @@ describe('executePlan : relance, journal et interruption', () => {
     expect(copies(s3)).toHaveLength(1);
   });
 
-  it('copie écrite mais réponse perdue (coupure) : jamais « copie » sans vérification, la relance la reconnaît par HEAD', async () => {
+  it('copie écrite mais réponse perdue (coupure) : jamais « copie » sans vérification, la relance la vérifie par HEAD sans recopier', async () => {
     const { s3, plan, journal, writer } = scenario();
     s3.afterCopy = () => {
       throw new Error('processus tué');
@@ -341,7 +367,9 @@ describe('executePlan : relance, journal et interruption', () => {
     s3.afterCopy = null;
     s3.commands.length = 0;
     const result = await executePlan(plan, { writer, journal });
-    expect(result).toMatchObject({ alreadyPresent: 1, copied: { count: 2 }, stop: null });
+    // Story 3.2 : copie tentée → reprise vérifiée (« copie »), et non plus « déjà présent ».
+    expect(result).toMatchObject({ recovered: 1, alreadyPresent: 0, copied: { count: 2 }, stop: null });
+    expect(journal.state(plan.id, K.a)).toBe('copie');
     expect(copies(s3).map((c) => c.input.Key)).not.toContain('photos/2016/2016-02/IMG_0005.JPG');
   });
 
@@ -388,6 +416,267 @@ describe('fonctions pures', () => {
       quarantaine: { count: 1, size: 50 },
       done: { count: 1, size: 100 },
       remaining: { count: 2, size: 250 },
+      inProgress: { count: 0, size: 0 },
+      failed: { count: 0, size: 0 },
+      notStarted: { count: 2, size: 250 },
+      failures: [],
     });
+  });
+});
+
+// --- Story 3.2 : reprise d'une exécution interrompue ------------------------------------------------------------------
+
+/** Cubbit renvoie un ETag MD5 simple après copie d'un multipart : cas qui bloquait la reprise en 3.1. */
+const cubbitEtag = (source: { etag: string }): string => (source.etag.includes('-') ? md5('9') : source.etag);
+const destinationContent = (s3: FakeS3): Record<string, unknown> => Object.fromEntries(s3.buckets.get(DEST) ?? []);
+const statesOf = (journal: MemoryJournal, planId: string): Record<string, ExecutionState> =>
+  Object.fromEntries([...journal.findStates(planId)].map(([k, e]) => [k, e.state]));
+const copiesByKey = (s3: FakeS3): Record<string, number> =>
+  copies(s3).reduce<Record<string, number>>((acc, c) => ({ ...acc, [c.input.Key!]: (acc[c.input.Key!] ?? 0) + 1 }), {});
+const s3ErrorOf = (name: string, status: number | undefined, code?: string, attempts = 1): Error =>
+  Object.assign(new Error(`${name} simulée`), { name, code, $metadata: status ? { httpStatusCode: status, attempts } : {} });
+
+/** Exécution ininterrompue de référence. */
+async function uninterrupted(): Promise<{ content: Record<string, unknown>; states: Record<string, ExecutionState> }> {
+  const ref = scenario();
+  ref.s3.copyEtag = cubbitEtag;
+  const result = await executePlan(ref.plan, ref);
+  expect(result.stop).toBeNull();
+  return { content: destinationContent(ref.s3), states: statesOf(ref.journal, ref.plan.id) };
+}
+
+describe('reprise après arrêt brutal, à chaque étape d\'une ligne', () => {
+  const DEST_OF: Record<string, string> = { [K.a]: 'photos/2016/2016-02/IMG_0005.JPG', [K.b]: 'albums/mariage/DSC 01 & co #2+?.jpg' };
+  type Step = 'avant copie' | 'après journal copie_en_cours, avant envoi' | 'après copie, avant vérification' | 'après vérification, avant journal copie';
+  const STEPS: [Step, boolean][] = [
+    ['avant copie', false],
+    ['après journal copie_en_cours, avant envoi', false],
+    ['après copie, avant vérification', true],
+    ['après vérification, avant journal copie', true],
+  ];
+
+  it.each(
+    [K.a, K.b].flatMap((target) => STEPS.map(([step, copiedBeforeKill]) => [target === K.a ? 'MD5' : 'multipart', step, target, copiedBeforeKill] as const)),
+  )('source %s, arrêt %s : la relance termine à l\'identique, sans recopie ni écrasement', async (_kind, step, target, copiedBeforeKill) => {
+    const reference = await uninterrupted();
+    const { s3, plan, journal, writer } = scenario();
+    s3.copyEtag = cubbitEtag;
+    if (step === 'avant copie') journal.killOn = (key, state, persisted) => key === target && state === 'copie_en_cours' && !persisted;
+    if (step === 'après journal copie_en_cours, avant envoi') journal.killOn = (key, state, persisted) => key === target && state === 'copie_en_cours' && persisted;
+    if (step === 'après copie, avant vérification') {
+      s3.afterCopy = (_bucket, key) => {
+        if (key === DEST_OF[target]!) {
+          journal.killed = true;
+          throw new Killed();
+        }
+      };
+    }
+    if (step === 'après vérification, avant journal copie') journal.killOn = (key, state, persisted) => key === target && state === 'copie' && !persisted;
+
+    await expect(executePlan(plan, { writer, journal })).rejects.toThrow('processus tué');
+    const expectedState = step === 'avant copie' ? 'a_faire' : 'copie_en_cours';
+    expect(journal.entry(plan.id, target)).toMatchObject({ state: expectedState, copyAttempted: expectedState === 'copie_en_cours' });
+    expect(s3.get(DEST, DEST_OF[target]!) !== undefined).toBe(copiedBeforeKill);
+
+    // Relance (nouveau processus).
+    journal.killed = false;
+    journal.killOn = null;
+    s3.afterCopy = null;
+    const result = await executePlan(plan, { writer, journal });
+    expect(result).toMatchObject({ stop: null, interrupted: false, remaining: 0, recovered: copiedBeforeKill ? 1 : 0 });
+    expect(destinationContent(s3)).toEqual(reference.content);
+    expect(statesOf(journal, plan.id)).toEqual(reference.states);
+    // Chaque destination copiée exactement une fois, toutes exécutions confondues ; jamais d'écrasement.
+    expect(copiesByKey(s3)).toEqual({ [DEST_OF[K.a]!]: 1, [DEST_OF[K.b]!]: 1, [`quarantaine/${K.c}`]: 1 });
+    expect(s3.overwrites).toEqual([]);
+    onlyHeadAndCopy(s3);
+
+    // Troisième lancement : rien à faire.
+    s3.commands.length = 0;
+    expect(await executePlan(plan, { writer, journal })).toMatchObject({ skipped: 3, remaining: 0 });
+    expect(s3.commands).toHaveLength(0);
+  });
+});
+
+describe('reprise : règles par état journalisé', () => {
+  const B_DEST = 'albums/mariage/DSC 01 & co #2+?.jpg';
+  const A_DEST = 'photos/2016/2016-02/IMG_0005.JPG';
+
+  function withJournal(state: ExecutionState, copyAttempted: boolean, key = K.b): ReturnType<typeof scenario> {
+    const context = scenario();
+    context.journal.prepare(context.plan.id, [{ sourceKey: K.a, destination: A_DEST }, { sourceKey: K.b, destination: B_DEST }, { sourceKey: K.c, destination: `quarantaine/${K.c}` }]);
+    context.journal.record(context.plan.id, key, state, state === 'echec' ? 'essai' : null, copyAttempted);
+    return context;
+  }
+
+  it('multipart copié non journalisé (copie_en_cours), ETag changé par Cubbit : accepté sans recopie', async () => {
+    const { s3, plan, journal, writer } = withJournal('copie_en_cours', true);
+    s3.put(DEST, B_DEST, { size: 200, etag: md5('9') });
+    const result = await executePlan(plan, { writer, journal });
+    expect(result).toMatchObject({ stop: null, recovered: 1, copied: { count: 2 } });
+    expect(journal.entry(plan.id, K.b)).toMatchObject({ state: 'copie', message: expect.stringContaining('vérifiée à la reprise') });
+    expect(copies(s3).map((c) => c.input.Key)).not.toContain(B_DEST);
+    expect(s3.overwrites).toEqual([]);
+  });
+
+  it('même objet pour une ligne jamais tentée (a_faire) : toujours bloqué « objet existant à examiner » (règle 3.1)', async () => {
+    const { s3, plan, journal, writer } = withJournal('a_faire', false);
+    s3.put(DEST, B_DEST, { size: 200, etag: md5('9') });
+    const result = await executePlan(plan, { writer, journal });
+    expect(result.stop).toMatchObject({ sourceKey: K.b, reason: expect.stringContaining('objet existant à examiner') });
+    expect(copies(s3).map((c) => c.input.Key)).not.toContain(B_DEST);
+  });
+
+  it.each([
+    ['copie_en_cours', 'multipart, taille différente', K.b, B_DEST, { size: 199, etag: md5('9') }],
+    ['copie_en_cours', 'MD5, même taille mais ETag différent', K.a, A_DEST, { size: 100, etag: md5('x') }],
+    ['echec après envoi', 'multipart, taille différente', K.b, B_DEST, { size: 1, etag: `${md5('b')}-3` }],
+  ] as const)('%s, objet présent non conforme (%s) : arrêt « à examiner », rien écrit, bloquant à chaque relance', async (label, _what, key, dest, object) => {
+    const { s3, plan, journal, writer } = withJournal(label === 'copie_en_cours' ? 'copie_en_cours' : 'echec', true, key);
+    s3.put(DEST, dest, object);
+    for (let run = 0; run < 2; run++) {
+      const result = await executePlan(plan, { writer, journal });
+      expect(result.stop).toMatchObject({ sourceKey: key, destination: dest, reason: expect.stringContaining('copie antérieure non conforme, à examiner') });
+      expect(journal.entry(plan.id, key)).toMatchObject({ state: 'echec', copyAttempted: true });
+    }
+    expect(copies(s3).map((c) => c.input.Key)).not.toContain(dest);
+    expect(s3.get(DEST, dest)).toEqual(object);
+  });
+
+  it('copie_en_cours, destination absente (copie jamais arrivée) : copie normale', async () => {
+    const { s3, plan, journal, writer } = withJournal('copie_en_cours', true);
+    const result = await executePlan(plan, { writer, journal });
+    expect(result).toMatchObject({ stop: null, recovered: 0, copied: { count: 3 } });
+    expect(copiesByKey(s3)[B_DEST]).toBe(1);
+  });
+
+  it('echec avant envoi (copie non tentée) : règles strictes, un multipart présent d\'ETag différent reste bloqué', async () => {
+    const { s3, plan, journal, writer } = withJournal('echec', false);
+    s3.put(DEST, B_DEST, { size: 200, etag: md5('9') });
+    expect((await executePlan(plan, { writer, journal })).stop?.reason).toMatch('objet existant à examiner');
+  });
+});
+
+describe('reprise : erreurs transitoires et arrêts de sûreté', () => {
+  const A_DEST = 'photos/2016/2016-02/IMG_0005.JPG';
+  const ERRORS = [
+    ['coupure réseau', () => s3ErrorOf('TimeoutError', undefined, 'ECONNRESET')],
+    ['erreur 500', () => s3ErrorOf('InternalError', 500)],
+    ['erreur 503', () => s3ErrorOf('ServiceUnavailable', 503)],
+    ['SlowDown', () => s3ErrorOf('SlowDown', 503)],
+  ] as const;
+  type Phase = 'HEAD avant copie' | 'copie refusée avant écriture' | 'réponse de copie perdue' | 'HEAD de vérification';
+  const PHASES: [Phase, boolean, boolean][] = [
+    // phase, copie tentée d'après le journal, copie arrivée en destination
+    ['HEAD avant copie', false, false],
+    ['copie refusée avant écriture', true, false],
+    ['réponse de copie perdue', true, true],
+    ['HEAD de vérification', true, true],
+  ];
+
+  it.each(ERRORS.flatMap(([label, make]) => PHASES.map(([phase, attempted, arrived]) => [label, phase, make, attempted, arrived] as const)))(
+    '%s pendant « %s » : ligne en échec, arrêt ; la relance la retente et termine à l\'identique',
+    async (_label, phase, make, attempted, arrived) => {
+      const reference = await uninterrupted();
+      const { s3, plan, journal, writer } = scenario();
+      s3.copyEtag = cubbitEtag;
+      let heads = 0;
+      if (phase === 'HEAD avant copie') s3.headError = (_b, key) => (key === A_DEST ? make() : null);
+      if (phase === 'HEAD de vérification') s3.headError = (_b, key) => (key === A_DEST && ++heads === 2 ? make() : null);
+      if (phase === 'copie refusée avant écriture') s3.copyError = (key) => (key === A_DEST ? make() : null);
+      if (phase === 'réponse de copie perdue') {
+        s3.afterCopy = (_b, key) => {
+          if (key === A_DEST) throw make();
+        };
+      }
+
+      const first = await executePlan(plan, { writer, journal });
+      expect(first.stop).toMatchObject({ sourceKey: K.a, destination: A_DEST });
+      expect(first.stop?.reason).toMatch(/simulée/);
+      expect(journal.entry(plan.id, K.a)).toMatchObject({ state: 'echec', copyAttempted: attempted });
+      expect([K.b, K.c].map((k) => journal.state(plan.id, k))).toEqual(['a_faire', 'a_faire']);
+      expect(s3.get(DEST, A_DEST) !== undefined).toBe(arrived);
+
+      s3.headError = null;
+      s3.copyError = null;
+      s3.afterCopy = null;
+      const second = await executePlan(plan, { writer, journal });
+      expect(second).toMatchObject({ stop: null, remaining: 0, recovered: arrived ? 1 : 0 });
+      expect(destinationContent(s3)).toEqual(reference.content);
+      expect(statesOf(journal, plan.id)).toEqual(reference.states);
+      expect(copiesByKey(s3)[A_DEST]).toBe(phase === 'HEAD avant copie' ? 1 : phase === 'copie refusée avant écriture' ? 2 : 1);
+      expect(s3.overwrites).toEqual([]);
+    },
+  );
+
+  it('source modifiée (412) : bloquant à chaque relance tant que la cause subsiste, rien écrit ; la tentative n\'est plus réputée', async () => {
+    const { s3, plan, journal, writer } = scenario();
+    journal.prepare(plan.id, [{ sourceKey: K.a, destination: A_DEST }]);
+    journal.record(plan.id, K.a, 'copie_en_cours', null, true); // tentative précédente jamais arrivée
+    s3.put(SOURCE, K.a, { size: 100, etag: md5('m') });
+    for (let run = 0; run < 2; run++) {
+      const result = await executePlan(plan, { writer, journal });
+      expect(result.stop).toMatchObject({ sourceKey: K.a, destination: A_DEST, reason: expect.stringContaining('source modifiée depuis l\'inventaire') });
+      expect(journal.entry(plan.id, K.a)).toMatchObject({ state: 'echec', copyAttempted: false });
+      expect(s3.keys(DEST)).toEqual(['photos/2020/2020-01/video.mp4']);
+    }
+    // Un objet multipart étranger déposé ensuite n'est pas pris pour une copie de l'outil.
+    s3.put(SOURCE, K.a, { size: 100, etag: md5('a') });
+    s3.put(DEST, A_DEST, { size: 100, etag: 'etranger-2' });
+    expect((await executePlan(plan, { writer, journal })).stop?.reason).toMatch('destination déjà occupée');
+  });
+
+  it.each([
+    ['refus du garde', false, () => new WriteRefusedError('essai')],
+    ['403 AccessDenied', false, () => s3ErrorOf('AccessDenied', 403)],
+    ['404 NoSuchKey', false, () => s3ErrorOf('NoSuchKey', 404)],
+    ['404 NoSuchBucket', false, () => s3ErrorOf('NoSuchBucket', 404)],
+    ['412 après 2 tentatives du SDK', true, () => s3ErrorOf('PreconditionFailed', 412, undefined, 2)],
+    ['500', true, () => s3ErrorOf('InternalError', 500)],
+  ] as const)('copie en cours précédente puis %s : copie réputée tentée = %s', async (_label, attempted, make) => {
+    const { s3, plan, journal, writer } = scenario();
+    journal.prepare(plan.id, [{ sourceKey: K.a, destination: A_DEST }]);
+    journal.record(plan.id, K.a, 'copie_en_cours', null, true);
+    const error = make();
+    if (error instanceof WriteRefusedError) jest.spyOn(writer, 'copyFromSource').mockRejectedValueOnce(error);
+    else s3.copyError = (key) => (key === A_DEST ? error : null);
+    const result = await executePlan(plan, { writer, journal });
+    expect(result.stop).toMatchObject({ sourceKey: K.a });
+    expect(journal.entry(plan.id, K.a)).toMatchObject({ state: 'echec', copyAttempted: attempted });
+    expect(result.stop!.reason.includes('rien n\'a été écrit')).toBe(!attempted);
+    expect(s3.keys(DEST)).toEqual(['photos/2020/2020-01/video.mp4']);
+  });
+
+  it('verrou perdu (keepAlive faux) : arrêt avant la ligne, aucune requête pour elle, journal intact', async () => {
+    const { s3, plan, journal, writer } = scenario();
+    let calls = 0;
+    const result = await executePlan(plan, { writer, journal, keepAlive: () => ++calls < 2 });
+    expect(calls).toBe(2);
+    expect(result.stop).toMatchObject({ sourceKey: K.b, reason: expect.stringContaining('verrou d\'exécution perdu') });
+    expect([K.a, K.b, K.c].map((k) => journal.state(plan.id, k))).toEqual(['copie', 'a_faire', 'a_faire']);
+    expect(copies(s3).map((c) => c.input.Key)).toEqual([A_DEST]);
+  });
+
+  it('keepAlive appelé une fois par ligne traitée', async () => {
+    const { plan, journal, writer } = scenario();
+    const keepAlive = jest.fn(() => true);
+    await executePlan(plan, { writer, journal, keepAlive });
+    expect(keepAlive).toHaveBeenCalledTimes(3);
+  });
+
+  it('summarizeExecution : déjà faits, en cours à vérifier, en échec à retenter (avec message), jamais traités', () => {
+    const { plan, journal } = scenario();
+    journal.prepare(plan.id, [{ sourceKey: K.a, destination: A_DEST }, { sourceKey: K.b, destination: 'albums/mariage/DSC 01 & co #2+?.jpg' }]);
+    journal.record(plan.id, K.a, 'copie_en_cours', null, true);
+    journal.record(plan.id, K.b, 'echec', 'copie en échec : SlowDown: ralentissez', true);
+    const overview = summarizeExecution(plan, journal.findStates(plan.id));
+    expect(overview).toMatchObject({
+      done: { count: 0 },
+      remaining: { count: 3, size: 350 },
+      inProgress: { count: 1, size: 100 },
+      failed: { count: 1, size: 200 },
+      notStarted: { count: 1, size: 50 },
+    });
+    expect(overview.failures).toEqual([{ sourceKey: K.b, destination: 'albums/mariage/DSC 01 & co #2+?.jpg', reason: 'copie en échec : SlowDown: ralentissez' }]);
   });
 });

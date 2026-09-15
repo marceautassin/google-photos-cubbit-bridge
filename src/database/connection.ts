@@ -20,7 +20,7 @@ export async function initDatabase(config: AppConfig['database']): Promise<Datab
     // Configurer la base de données
     db.exec(`
       PRAGMA journal_mode = WAL;
-      PRAGMA synchronous = NORMAL;
+      PRAGMA synchronous = FULL; -- story 3.2 : une écriture validée du journal (copie_en_cours) survit à une coupure de courant
       PRAGMA foreign_keys = ON;
     `);
     
@@ -79,10 +79,10 @@ export function inTransaction<T>(database: DatabaseSync, work: () => T): T {
 }
 
 /**
- * Exécute les migrations de la base de données
+ * Migrations du schéma, appliquées dans l'ordre, chacune une seule fois. Une migration livrée n'est jamais modifiée :
+ * toute évolution est une nouvelle migration.
  */
-async function runMigrations(database: DatabaseSync): Promise<void> {
-  const migrations = [
+export const MIGRATIONS: readonly { version: number; name: string; sql: string }[] = [
     {
       version: 1,
       name: 'create_initial_tables',
@@ -265,8 +265,42 @@ async function runMigrations(database: DatabaseSync): Promise<void> {
         );
       `,
     },
-  ];
+    {
+      version: 8,
+      name: 'resume_repair_execution',
+      sql: `
+        -- Reprise d'une réparation interrompue (story 3.2).
+        -- État 'copie_en_cours' : écrit et validé AVANT l'envoi d'une copie. copy_attempted = 1 : une copie serveur,
+        -- conditionnée à l'ETag source, a été envoyée vers cette destination (remis à 0 si le serveur l'a refusée, 412).
+        -- SQLite ne sait pas modifier un CHECK : la table est reconstruite. Lignes existantes (journal 3.1) : copy_attempted = 0,
+        -- c'est-à-dire les règles strictes de la story 3.1.
+        CREATE TABLE repair_execution_lines_v8 (
+          plan_id TEXT NOT NULL,
+          source_key TEXT NOT NULL,
+          destination TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('a_faire', 'copie_en_cours', 'copie', 'deja_present', 'echec')),
+          copy_attempted INTEGER NOT NULL DEFAULT 0 CHECK (copy_attempted IN (0, 1)),
+          message TEXT,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (plan_id, source_key)
+        );
+        INSERT INTO repair_execution_lines_v8 (plan_id, source_key, destination, state, copy_attempted, message, updated_at)
+          SELECT plan_id, source_key, destination, state, 0, message, updated_at FROM repair_execution_lines;
+        DROP TABLE repair_execution_lines;
+        ALTER TABLE repair_execution_lines_v8 RENAME TO repair_execution_lines;
 
+        -- Dernière activité de l'exécution qui détient le verrou, rafraîchie à chaque ligne : la levée explicite est
+        -- refusée tant qu'elle est récente, quels que soient le poste et le processus.
+        ALTER TABLE repair_execution_lock ADD COLUMN last_activity_at TEXT;
+        UPDATE repair_execution_lock SET last_activity_at = acquired_at;
+      `,
+    },
+];
+
+/**
+ * Exécute les migrations de la base de données
+ */
+async function runMigrations(database: DatabaseSync): Promise<void> {
   // Créer la table de versioning si elle n'existe pas
   database.exec(`
     CREATE TABLE IF NOT EXISTS schema_version (
@@ -284,7 +318,7 @@ async function runMigrations(database: DatabaseSync): Promise<void> {
   const startVersion = currentVersion.version || 0;
 
   // Appliquer les migrations manquantes
-  for (const migration of migrations) {
+  for (const migration of MIGRATIONS) {
     if (migration.version > startVersion) {
       getLogger().info(`Application de la migration ${migration.version}: ${migration.name}`);
       

@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import * as os from 'os';
+import { S3_SEND_MAX_DURATION_MS } from '../clients/s3-client';
 import { getDatabase, inTransaction } from './connection';
 import type { ExecutionJournal, ExecutionState, JournalEntry } from '../inventory/plan-execution';
 
@@ -12,7 +13,33 @@ export interface LockOwner {
 export interface ExecutionLock extends LockOwner {
   planId: string;
   acquiredAt: Date;
+  lastActivityAt: Date; // rafraîchie à chaque ligne traitée
 }
+
+/**
+ * Durée maximale d'une ligne, entre deux rafraîchissements de l'activité : HEAD, copie serveur, HEAD de vérification, chacun
+ * borné par l'échéance d'envoi du point d'accès (délais de connexion et d'inactivité × tentatives du SDK + attentes).
+ */
+export const MAX_LINE_DURATION_MS = 3 * S3_SEND_MAX_DURATION_MS;
+
+/** Marge pour les écritures du journal et les écarts d'horloge usuels. */
+const LOCK_IDLE_MARGIN_MS = 10 * 60_000;
+
+/**
+ * Durée sans activité au-delà de laquelle un verrou peut être levé explicitement, quels que soient le poste et le processus.
+ * Dérivée des délais S3 : strictement supérieure à la durée maximale d'une ligne, une exécution vivante (même bloquée sur
+ * une requête) rafraîchit donc toujours son activité avant ce seuil. Valeur actuelle : 60 min.
+ */
+export const LOCK_IDLE_MINUTES = Math.ceil((MAX_LINE_DURATION_MS + LOCK_IDLE_MARGIN_MS) / 60_000);
+
+const IDLE_MS = LOCK_IDLE_MINUTES * 60_000;
+
+/** Instant à partir duquel le verrou peut être levé explicitement. */
+export const liftableAt = (lock: ExecutionLock): Date => new Date(lock.lastActivityAt.getTime() + IDLE_MS);
+
+const describeLock = (lock: ExecutionLock): string =>
+  `plan ${lock.planId.slice(0, 12)}, processus ${lock.pid} sur ${lock.host}, pris le ${lock.acquiredAt.toISOString()}, ` +
+  `dernière activité le ${lock.lastActivityAt.toISOString()}`;
 
 export const currentOwner = (): LockOwner => ({ pid: process.pid, host: os.hostname() });
 
@@ -27,11 +54,16 @@ export function isProcessAlive(pid: number): boolean {
 }
 
 /**
- * Verrou périmé : posé sur ce poste par un processus qui n'existe plus. Posé sur un autre poste, il est impossible de le
- * savoir : il n'est pas déclaré périmé, mais peut être levé explicitement.
+ * Verrou périmé : posé sur ce poste par un processus qui n'existe plus, ou sans activité depuis `LOCK_IDLE_MINUTES`.
+ * Posé sur un autre poste et récent, impossible de savoir : il n'est pas déclaré périmé.
  */
-export function isStaleLock(lock: LockOwner, isAlive: (pid: number) => boolean = isProcessAlive, host = os.hostname()): boolean {
-  return lock.host === host && !isAlive(lock.pid);
+export function isStaleLock(
+  lock: ExecutionLock,
+  now: Date,
+  isAlive: (pid: number) => boolean = isProcessAlive,
+  host = os.hostname(),
+): boolean {
+  return now >= liftableAt(lock) || (lock.host === host && !isAlive(lock.pid));
 }
 
 export class ExecutionLockedError extends Error {
@@ -39,13 +71,13 @@ export class ExecutionLockedError extends Error {
     readonly lock: ExecutionLock,
     readonly stale: boolean,
   ) {
-    const since = `plan ${lock.planId.slice(0, 12)}, processus ${lock.pid} sur ${lock.host}, depuis le ${lock.acquiredAt.toISOString()}`;
+    const lift = `--lever-verrou accepté à partir du ${liftableAt(lock).toISOString()} (${LOCK_IDLE_MINUTES} min sans activité)`;
     super(
       stale
-        ? `verrou d'exécution périmé (${since}) : cette exécution s'est arrêtée sans le libérer. Vérifiez qu'aucune ` +
-            'exécution ne tourne, puis relancez avec --lever-verrou'
-        : `une exécution est déjà en cours ou son verrou n'a pas été libéré (${since}). Attendez sa fin ; si aucune ` +
-            'exécution ne tourne, relancez avec --lever-verrou',
+        ? `verrou d'exécution périmé (${describeLock(lock)}) : cette exécution s'est arrêtée sans le libérer. Vérifiez ` +
+            `qu'aucune exécution ne tourne, puis relancez avec --lever-verrou (${lift})`
+        : `une exécution est déjà en cours ou son verrou n'a pas été libéré (${describeLock(lock)}). Attendez sa fin ; si ` +
+            `aucune exécution ne tourne, relancez avec ${lift}`,
     );
     this.name = 'ExecutionLockedError';
   }
@@ -56,17 +88,19 @@ interface LockRow {
   pid: number;
   host: string;
   acquired_at: string;
+  last_activity_at: string | null; // null : verrou antérieur à la migration 8 (jamais en pratique)
 }
 
 interface EntryRow {
   source_key: string;
   destination: string;
   state: ExecutionState;
+  copy_attempted: number;
   message: string | null;
 }
 
 /**
- * Journal d'exécution du plan de réparation (story 3.1), persistant et écrit ligne par ligne. Toujours filtré par
+ * Journal d'exécution du plan de réparation (stories 3.1 et 3.2), persistant et écrit ligne par ligne. Toujours filtré par
  * empreinte : le journal d'un autre plan n'est jamais lu.
  */
 export class RepairExecutionModel implements ExecutionJournal {
@@ -88,14 +122,20 @@ export class RepairExecutionModel implements ExecutionJournal {
 
   findStates(planId: string): Map<string, JournalEntry> {
     const rows = this.db
-      .prepare('SELECT source_key, destination, state, message FROM repair_execution_lines WHERE plan_id = ?')
+      .prepare('SELECT source_key, destination, state, copy_attempted, message FROM repair_execution_lines WHERE plan_id = ?')
       .all(planId) as unknown as EntryRow[];
-    return new Map(rows.map((r) => [r.source_key, { destination: r.destination, state: r.state, message: r.message }]));
+    return new Map(
+      rows.map((r) => [r.source_key, { destination: r.destination, state: r.state, copyAttempted: r.copy_attempted === 1, message: r.message }]),
+    );
   }
 
   findLock(): ExecutionLock | null {
-    const row = this.db.prepare('SELECT plan_id, pid, host, acquired_at FROM repair_execution_lock').get() as unknown as LockRow | undefined;
-    return row ? { planId: row.plan_id, pid: row.pid, host: row.host, acquiredAt: new Date(row.acquired_at) } : null;
+    const row = this.db
+      .prepare('SELECT plan_id, pid, host, acquired_at, last_activity_at FROM repair_execution_lock')
+      .get() as unknown as LockRow | undefined;
+    if (!row) return null;
+    const acquiredAt = new Date(row.acquired_at);
+    return { planId: row.plan_id, pid: row.pid, host: row.host, acquiredAt, lastActivityAt: row.last_activity_at ? new Date(row.last_activity_at) : acquiredAt };
   }
 
   /**
@@ -105,17 +145,28 @@ export class RepairExecutionModel implements ExecutionJournal {
   acquireLock(planId: string, owner: LockOwner = currentOwner(), isAlive: (pid: number) => boolean = isProcessAlive, at = new Date()): void {
     const refuse = (): never => {
       const lock = this.findLock()!;
-      throw new ExecutionLockedError(lock, isStaleLock(lock, isAlive, owner.host));
+      throw new ExecutionLockedError(lock, isStaleLock(lock, at, isAlive, owner.host));
     };
     if (this.findLock()) refuse();
     try {
       this.db
-        .prepare('INSERT INTO repair_execution_lock (id, plan_id, pid, host, acquired_at) VALUES (1, ?, ?, ?, ?)')
-        .run(planId, owner.pid, owner.host, at.toISOString());
+        .prepare('INSERT INTO repair_execution_lock (id, plan_id, pid, host, acquired_at, last_activity_at) VALUES (1, ?, ?, ?, ?, ?)')
+        .run(planId, owner.pid, owner.host, at.toISOString(), at.toISOString());
     } catch (error) {
       if (this.findLock()) refuse();
       throw error;
     }
+  }
+
+  /**
+   * Rafraîchit l'activité du verrou détenu par `owner` ; rend `false` si `owner` ne le détient plus (levé pendant une mise
+   * en veille, par exemple) : l'exécution doit alors s'arrêter.
+   */
+  touchLock(owner: LockOwner = currentOwner(), at: Date = new Date()): boolean {
+    const result = this.db
+      .prepare('UPDATE repair_execution_lock SET last_activity_at = ? WHERE id = 1 AND pid = ? AND host = ?')
+      .run(at.toISOString(), owner.pid, owner.host);
+    return Number(result.changes) === 1;
   }
 
   /** Libère le verrou s'il appartient à `owner`. */
@@ -124,23 +175,53 @@ export class RepairExecutionModel implements ExecutionJournal {
   }
 
   /**
-   * Levée explicite (`--lever-verrou`) : refusée si le propriétaire tourne encore sur ce poste. Rend le verrou levé, ou
-   * `null` s'il n'y en avait pas.
+   * Levée explicite (`--lever-verrou`) : refusée tant que la dernière activité date de moins de `LOCK_IDLE_MINUTES`,
+   * quels que soient le poste et le processus (un nom d'hôte changeant ou un PID réutilisé ne prouvent rien). Au-delà,
+   * levée même si le PID existe encore sur ce poste (réutilisé) ou si le verrou vient d'un autre poste. Rend le verrou
+   * levé, ou `null` s'il n'y en avait pas.
    */
-  forceReleaseLock(isAlive: (pid: number) => boolean = isProcessAlive, host = os.hostname()): ExecutionLock | null {
+  forceReleaseLock(now: Date = new Date()): ExecutionLock | null {
     const lock = this.findLock();
     if (!lock) return null;
-    if (lock.host === host && isAlive(lock.pid)) {
-      throw new Error(`verrou non levé : le processus ${lock.pid} qui l'a pris tourne encore sur ce poste`);
+    if (now < liftableAt(lock)) {
+      // Horodatages de l'horloge système : une activité « dans le futur » signale une horloge reculée (ou un autre poste
+      // en avance) ; la levée reste refusée jusqu'à l'échéance, et l'écart est affiché.
+      const elapsed = Math.floor((now.getTime() - lock.lastActivityAt.getTime()) / 60_000);
+      const since =
+        elapsed >= 0
+          ? `dernière activité il y a ${elapsed} min`
+          : `dernière activité datée de ${-elapsed} min dans le futur par rapport à l'heure actuelle (horloge reculée ?)`;
+      throw new Error(
+        `verrou non levé : ${since} (${describeLock(lock)}), il est possible qu'une exécution tourne encore. ` +
+          `Levée possible à partir du ${liftableAt(lock).toISOString()} (${LOCK_IDLE_MINUTES} min sans activité)`,
+      );
     }
-    this.db.exec('DELETE FROM repair_execution_lock');
+    // Suppression conditionnée au verrou lu : un verrou repris ou rafraîchi entre-temps n'est pas levé.
+    const result = this.db
+      .prepare('DELETE FROM repair_execution_lock WHERE id = 1 AND pid = ? AND host = ? AND acquired_at = ? AND last_activity_at = ?')
+      .run(lock.pid, lock.host, lock.acquiredAt.toISOString(), lock.lastActivityAt.toISOString());
+    if (Number(result.changes) !== 1) {
+      throw new Error('verrou non levé : il a été repris ou rafraîchi pendant la levée, une exécution tourne. Relancez la commande pour réévaluer');
+    }
     return lock;
   }
 
-  record(planId: string, sourceKey: string, state: ExecutionState, message: string | null, at: Date = new Date()): void {
+  /** `copyAttempted` omis : inchangé. */
+  record(
+    planId: string,
+    sourceKey: string,
+    state: ExecutionState,
+    message: string | null,
+    copyAttempted?: boolean,
+    at: Date = new Date(),
+  ): void {
+    const attempted = copyAttempted === undefined ? null : copyAttempted ? 1 : 0;
     const result = this.db
-      .prepare('UPDATE repair_execution_lines SET state = ?, message = ?, updated_at = ? WHERE plan_id = ? AND source_key = ?')
-      .run(state, message, at.toISOString(), planId, sourceKey);
+      .prepare(
+        `UPDATE repair_execution_lines SET state = ?, message = ?, copy_attempted = COALESCE(?, copy_attempted), updated_at = ?
+         WHERE plan_id = ? AND source_key = ?`,
+      )
+      .run(state, message, attempted, at.toISOString(), planId, sourceKey);
     if (Number(result.changes) !== 1) {
       throw new Error(`journal d'exécution : ligne absente pour ${sourceKey} (plan ${planId})`);
     }
