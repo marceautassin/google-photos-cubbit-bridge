@@ -80,3 +80,11 @@ export function createProgressBar(current: number, total: number, width: number 
   
   return `[${'█'.repeat(filled)}${' '.repeat(empty)}] ${Math.round(percentage * 100)}%`;
 }
+
+/**
+ * Décrit une erreur par `name: message` uniquement. L'objet d'erreur du SDK S3 peut embarquer l'identifiant de
+ * clé (`AWSAccessKeyId`) : il n'est jamais journalisé ni affiché en entier.
+ */
+export function describeError(error: unknown): string {
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+}

@@ -1,5 +1,5 @@
 # generated: 2026-09-14
-# last_updated: 2026-09-14
+# last_updated: 2026-09-15
 # project: google-photos-cubbit-bridge
 # project_key: NOKEY
 # tracking_system: file-system
@@ -41,7 +41,7 @@
 # - Retrospective appends its action items to action_items; sprint-status surfaces open ones
 
 generated: 2026-09-14
-last_updated: 2026-09-14
+last_updated: 2026-09-15
 project: google-photos-cubbit-bridge
 project_key: NOKEY
 tracking_system: file-system
@@ -56,7 +56,7 @@ development_status:
 
   epic-2: in-progress
   2-1-inventorier-le-bucket-entier: done
-  2-2-reconstruire-la-date-de-prise-de-vue-par-cascade-tracee: backlog
+  2-2-reconstruire-la-date-de-prise-de-vue-par-cascade-tracee: done
   2-3-identifier-les-doublons-et-les-collisions-de-noms: backlog
   2-4-produire-le-plan-de-reparation-inspectable: backlog
   2-5-restituer-l-etat-de-l-archive-a-la-demande: backlog

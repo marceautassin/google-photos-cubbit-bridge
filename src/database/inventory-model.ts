@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { getDatabase } from './connection';
+import { getDatabase, inTransaction } from './connection';
 import { BucketObject } from '../clients/types';
 
 export interface InventoryRun {
@@ -45,8 +45,7 @@ export class InventoryModel {
       totalSize: objects.reduce((total, object) => total + object.size, 0),
     };
 
-    this.db.exec('BEGIN');
-    try {
+    inTransaction(this.db, () => {
       this.db.prepare('DELETE FROM inventory_objects WHERE bucket = ?').run(bucket);
       const insert = this.db.prepare(
         'INSERT INTO inventory_objects (bucket, key, size, last_modified, etag) VALUES (?, ?, ?, ?, ?)',
@@ -61,15 +60,7 @@ export class InventoryModel {
              object_count = excluded.object_count, total_size = excluded.total_size`,
         )
         .run(bucket, completedAt.toISOString(), run.objectCount, run.totalSize);
-      this.db.exec('COMMIT');
-    } catch (error) {
-      try {
-        if (this.db.isTransaction) this.db.exec('ROLLBACK');
-      } catch {
-        // L'erreur d'origine prime : elle est relancée ci-dessous.
-      }
-      throw error;
-    }
+    });
 
     return run;
   }

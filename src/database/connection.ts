@@ -58,6 +58,27 @@ export function closeDatabase(): void {
 }
 
 /**
+ * Exécute `work` dans une transaction : tout est validé, ou rien.
+ * node:sqlite n'offre pas d'aide aux transactions : BEGIN/COMMIT/ROLLBACK explicites. Si le ROLLBACK échoue
+ * (SQLite peut avoir déjà annulé), l'erreur d'origine prime et est relancée.
+ */
+export function inTransaction<T>(database: DatabaseSync, work: () => T): T {
+  database.exec('BEGIN');
+  try {
+    const result = work();
+    database.exec('COMMIT');
+    return result;
+  } catch (error) {
+    try {
+      if (database.isTransaction) database.exec('ROLLBACK');
+    } catch {
+      // L'erreur d'origine prime : elle est relancée ci-dessous.
+    }
+    throw error;
+  }
+}
+
+/**
  * Exécute les migrations de la base de données
  */
 async function runMigrations(database: DatabaseSync): Promise<void> {
@@ -152,6 +173,29 @@ async function runMigrations(database: DatabaseSync): Promise<void> {
         );
       `,
     },
+    {
+      version: 5,
+      name: 'create_inventory_dates',
+      sql: `
+        -- Datation de chaque média inventorié (story 2.2). taken_at : heure locale nominale sans fuseau
+        -- (AAAA-MM-JJTHH:MM:SS), NULL si indéterminée. size/etag : identité de l'objet daté, pour ne réutiliser
+        -- une lecture EXIF que si l'objet n'a pas changé.
+        CREATE TABLE IF NOT EXISTS inventory_dates (
+          bucket TEXT NOT NULL,
+          key TEXT NOT NULL,
+          size INTEGER NOT NULL,
+          etag TEXT,
+          source TEXT NOT NULL CHECK (source IN ('nom_fichier', 'exif', 'indeterminee')),
+          taken_at TEXT,
+          detail TEXT,
+          exif_read INTEGER NOT NULL DEFAULT 0,
+          dated_at TEXT NOT NULL,
+          PRIMARY KEY (bucket, key),
+          CHECK ((source = 'indeterminee') = (taken_at IS NULL)),
+          CHECK (taken_at IS NULL OR taken_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9]')
+        );
+      `,
+    },
   ];
 
   // Créer la table de versioning si elle n'existe pas
@@ -175,19 +219,12 @@ async function runMigrations(database: DatabaseSync): Promise<void> {
     if (migration.version > startVersion) {
       getLogger().info(`Application de la migration ${migration.version}: ${migration.name}`);
       
-      // node:sqlite n'offre pas d'aide aux transactions : BEGIN/COMMIT explicites
-      database.exec('BEGIN');
-      try {
+      inTransaction(database, () => {
         database.exec(migration.sql);
         database
           .prepare('INSERT INTO schema_version (version, name) VALUES (?, ?)')
           .run(migration.version, migration.name);
-        database.exec('COMMIT');
-      } catch (error) {
-        // SQLite peut avoir déjà annulé la transaction : ne pas masquer l'erreur d'origine
-        if (database.isTransaction) database.exec('ROLLBACK');
-        throw error;
-      }
+      });
       
       getLogger().info(`Migration ${migration.version} appliquée avec succès`);
     }

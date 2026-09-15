@@ -2,6 +2,7 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import * as mime from 'mime-types';
 import { getLogger } from './logger';
+import { buildLocalDateTime, LocalDateTime, localDateTimeParts } from './local-date-time';
 
 /**
  * Vérifie si un fichier est supporté basé sur son extension
@@ -176,75 +177,84 @@ export async function generateUniqueFilename(dirPath: string, filename: string):
 }
 
 /**
- * Extrait la date du nom de fichier si elle est présente
- * Supporte les formats courants comme IMG_20190817_181059.jpg, DSC_20240315_123456.jpg, etc.
+ * Motifs de date dans un nom de fichier, du plus spécifique au plus générique. Groupes : soit
+ * (AAAAMMJJ, HHMMSS?), soit (AAAA, MM, JJ, HH, MM, SS).
+ */
+const FILENAME_DATE_PATTERNS: RegExp[] = [
+  // IMG_20190817_181059.jpg, PXL_20240315_180000123.jpg, VID_…, MVIMG_…, PANO_…, BURST20210614174503123
+  // (jusqu'à 3 chiffres de millisecondes tolérés après l'heure, pas davantage)
+  /(?:IMG|DSC|PHOTO|VID|MOV|PXL|MVIMG|PANO|BURST)_?(\d{8})_?(\d{6})(?!\d{4})/gi,
+  // 20190817_181059.jpg, Screenshot_20190817-181059.png, 16587232_20190101235959.jpg : bloc isolé, ni précédé
+  // d'une lettre ou d'un chiffre (`hash19991231235959abc`), ni suivi de 4 chiffres ou plus (`201908171234567890`)
+  /(?<![A-Za-z0-9])(\d{8})[_-]?(\d{6})(?!\d{4})/g,
+  // IMG-20190817-WA0001.jpg (format WhatsApp, sans heure)
+  /(?:IMG|VID)-?(\d{8})-/gi,
+  // Formats séparés : 2019-08-17_18-10-59.jpg, 2019-08-17 18.10.59.jpg, Screenshot_2019-08-17-18-10-59.png,
+  // 2019.08.17_18.10.59.jpg, WhatsApp Image 2019-08-17 at 18.10.59.jpeg, Capture d'écran 2019-08-17 à 18.10.59.png
+  /(?<!\d)(\d{4})[-.](\d{2})[-.](\d{2})(?: at | à |[ _T.-])?(\d{2})[-.:h]?(\d{2})[-.:m]?(\d{2})(?!\d)/g,
+];
+
+/**
+ * Extrait la date de prise de vue du nom de fichier, en heure locale nominale sans fuseau
+ * (`AAAA-MM-JJTHH:MM:SS`), ou `null` si aucun motif ne donne une date calendaire valide.
+ * Aucune date par défaut : l'absence de date est un résultat.
+ */
+export function parseFilenameDate(filename: string): LocalDateTime | null {
+  // Toutes les occurrences de chaque motif sont essayées : la première date calendaire valide l'emporte.
+  // NFC : macOS écrit les accents décomposés (« à » en « a » + accent), qui ne correspondraient pas au motif
+  const normalized = filename.normalize('NFC');
+  for (const pattern of FILENAME_DATE_PATTERNS) {
+    for (const match of normalized.matchAll(pattern)) {
+      const date = toLocalDateTime(match);
+      if (date) return date;
+    }
+  }
+  return null;
+}
+
+function toLocalDateTime(match: RegExpMatchArray): LocalDateTime | null {
+  const [, first, ...rest] = match;
+  let parts: number[];
+  if (first?.length === 8) {
+    const time = rest[0] ?? '000000';
+    parts = [
+      first.slice(0, 4),
+      first.slice(4, 6),
+      first.slice(6, 8),
+      time.slice(0, 2),
+      time.slice(2, 4),
+      time.slice(4, 6),
+    ].map(Number);
+  } else {
+    parts = [first, ...rest].map(Number);
+  }
+
+  const [year, month, day, hour, minute, second] = parts as [
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
+  return buildLocalDateTime(year, month, day, hour, minute, second);
+}
+
+/**
+ * Extrait la date du nom de fichier sous forme de `Date` en heure locale (contrat historique de
+ * `takeout-parser.ts`, dont la cascade sera revue en story 4.2). Bornée à [1970, année courante + 1].
  */
 export function extractDateFromFilename(filename: string): Date | null {
-  try {
-    // Pattern pour les formats courants de noms de fichiers avec dates
-    const patterns = [
-      // IMG_20190817_181059.jpg ou IMG_20190817_181059(1).jpg
-      /(?:IMG|DSC|PHOTO|VID|MOV)_?(\d{8})_?(\d{6})/i,
-      // 20190817_181059.jpg
-      /(\d{8})_?(\d{6})/,
-      // IMG-20190817-WA0001.jpg (format WhatsApp)
-      /(?:IMG|VID)-?(\d{8})-/i,
-      // 2019-08-17_18-10-59.jpg
-      /(\d{4})-(\d{2})-(\d{2})_?(\d{2})-?(\d{2})-?(\d{2})/,
-      // 2019.08.17_18.10.59.jpg
-      /(\d{4})\.(\d{2})\.(\d{2})_?(\d{2})\.(\d{2})\.(\d{2})/,
-    ];
-
-    for (const pattern of patterns) {
-      const match = filename.match(pattern);
-      if (match) {
-        let year: number, month: number, day: number, hour = 0, minute = 0, second = 0;
-
-        if (match[1] && match[1].length === 8) {
-          // Format YYYYMMDD
-          const dateStr = match[1];
-          year = parseInt(dateStr.substr(0, 4));
-          month = parseInt(dateStr.substr(4, 2));
-          day = parseInt(dateStr.substr(6, 2));
-          
-          if (match[2] && match[2].length === 6) {
-            // Format HHMMSS
-            const timeStr = match[2];
-            hour = parseInt(timeStr.substr(0, 2));
-            minute = parseInt(timeStr.substr(2, 2));
-            second = parseInt(timeStr.substr(4, 2));
-          }
-        } else if (match[1] && match[1].length === 4 && match[2] && match[3]) {
-          // Format YYYY-MM-DD
-          year = parseInt(match[1]);
-          month = parseInt(match[2]);
-          day = parseInt(match[3]);
-          
-          if (match[4] && match[5] && match[6]) {
-            hour = parseInt(match[4]);
-            minute = parseInt(match[5]);
-            second = parseInt(match[6]);
-          }
-        } else {
-          continue;
-        }
-
-        // Valider les valeurs
-        if (year >= 1970 && year <= new Date().getFullYear() + 1 &&
-            month >= 1 && month <= 12 &&
-            day >= 1 && day <= 31 &&
-            hour >= 0 && hour <= 23 &&
-            minute >= 0 && minute <= 59 &&
-            second >= 0 && second <= 59) {
-          
-          return new Date(year, month - 1, day, hour, minute, second);
-        }
-      }
-    }
-    
-    return null;
-  } catch (error) {
-    getLogger().debug(`Erreur lors de l'extraction de la date du nom de fichier ${filename}:`, error);
-    return null;
-  }
+  const date = parseFilenameDate(filename);
+  if (!date) return null;
+  const [year, month, day, hour, minute, second] = localDateTimeParts(date) as [
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
+  if (year < 1970 || year > new Date().getFullYear() + 1) return null;
+  return new Date(year, month - 1, day, hour, minute, second);
 }

@@ -99,3 +99,12 @@ export interface BucketLister {
   readonly bucket: string;
   listPage(continuationToken?: string): Promise<BucketObjectPage>;
 }
+
+/**
+ * Accès en lecture seule à une plage d'octets d'un objet (lecture EXIF, story 2.2) : lire, et rien d'autre.
+ */
+export interface ObjectRangeReader {
+  readonly bucket: string;
+  /** Lit les octets `start` à `end` inclus (en-tête HTTP `Range`). */
+  readRange(key: string, start: number, end: number): Promise<Uint8Array>;
+}
