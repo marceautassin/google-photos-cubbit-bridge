@@ -18,7 +18,7 @@ export const SUFFIX_LENGTH = 8;
 
 /** Règle de désambiguïsation (question Q1 du PRD), affichée telle quelle dans le rapport. */
 export const DISAMBIGUATION_RULE =
-  'Dans un même dossier de destination, les noms sont comparés sans casse (Unicode NFC). Un nom déjà occupé ne change ' +
+  'Dans un même dossier de destination (dossier et nom comparés sans casse, Unicode NFC), les noms sont départagés ainsi. Un nom déjà occupé ne change ' +
   'jamais. Un nom libre porté par un seul nouveau contenu est conservé tel quel ; sinon chaque nouveau contenu reçoit ' +
   `le suffixe « _<${SUFFIX_LENGTH} premiers caractères de son ETag> » avant l'extension (ex. IMG_0044_1a2b3c4d.JPG), ` +
   'allongé si nécessaire jusqu\'à l\'ETag complet. Un contenu d\'ETag identique déjà présent est « déjà archivé ». ' +
@@ -93,11 +93,13 @@ export interface NamingAnomaly {
 
 export interface NamingResult {
   names: Map<string, string>; // id → nom de la nouvelle destination
-  alreadyArchived: Map<string, string>; // id → nom de l'objet d'ETag identique déjà présent
+  alreadyArchived: Map<string, string>; // id → clé exacte (casse, forme Unicode) de l'objet d'ETag identique déjà présent
   anomalies: NamingAnomaly[]; // entrées sans destination possible (aucune écriture ne doit les concerner)
 }
 
-const conflictKey = (folder: string, name: string): string => `${folder}\u0000${comparableName(name)}`;
+/** Clé de conflit : dossier et nom comparés sans casse ni différence de forme Unicode (un système de fichiers insensible
+ * à la casse fusionnerait `Divers/` et `divers/`). */
+const conflictKey = (folder: string, name: string): string => `${comparableName(folder)}\u0000${comparableName(name)}`;
 
 /** `occupied` est-il le nom d'origine ou une variante suffixée (`base_<id>ext`) de `name` ? */
 function isNameOrVariant(occupied: string, name: string): boolean {
@@ -165,16 +167,16 @@ export function resolveNames(entries: NamingEntry[], occupied: OccupiedDestinati
   const taken = new Set(occupied.map((o) => conflictKey(o.folder, o.name)));
   const occupiedByEtag = groupBy(
     occupied.filter((o) => normalizeEtag(o.etag)),
-    (o) => `${o.folder}\u0000${normalizeEtag(o.etag)}`,
+    (o) => `${comparableName(o.folder)}\u0000${normalizeEtag(o.etag)}`,
   );
 
   const arrivals: NamingEntry[] = [];
   for (const entry of entries) {
     const etag = normalizeEtag(entry.etag);
     const existing = etag
-      ? occupiedByEtag.get(`${entry.folder}\u0000${etag}`)?.find((o) => isNameOrVariant(o.name, entry.name))
+      ? occupiedByEtag.get(`${comparableName(entry.folder)}\u0000${etag}`)?.find((o) => isNameOrVariant(o.name, entry.name))
       : undefined;
-    if (existing) result.alreadyArchived.set(entry.id, existing.name);
+    if (existing) result.alreadyArchived.set(entry.id, existing.folder + existing.name);
     else arrivals.push(entry);
   }
 
@@ -264,6 +266,30 @@ export function datingRank(dating: ObjectDating | null): number {
 
 const byKey = (a: MediaCopy, b: MediaCopy): number => compareStrings(a.object.key, b.object.key);
 
+/** Nom de fichier d'une copie (dernier segment de sa clé). */
+export const nameOf = (c: MediaCopy): string => path.basename(c.object.key);
+
+/** Associe à chaque média sa datation, si elle vaut pour lui (même clé, taille, ETag) ; triés par clé. */
+export function attachDatings(media: BucketObject[], datings: ObjectDating[]): MediaCopy[] {
+  const datingByKey = new Map(datings.map((row) => [row.key, row]));
+  return media
+    .map((object) => {
+      const row = datingByKey.get(object.key);
+      return { object, dating: isSameObject(row, object) ? row : null };
+    })
+    .sort(byKey);
+}
+
+/** Copies de même nom comparable et de même taille (candidates au doublon). */
+export function groupSameNameAndSize(copies: MediaCopy[]): MediaCopy[][] {
+  return [...groupBy(copies, (c) => `${c.object.size}\u0000${comparableName(nameOf(c))}`).values()];
+}
+
+/** Contenus distincts d'un groupe de même nom et taille : même ETag non nul. Un ETag absent ne se fusionne avec rien. */
+export function splitContents(sameNameAndSize: MediaCopy[]): MediaCopy[][] {
+  return [...groupBy(sameNameAndSize, (c) => normalizeEtag(c.object.etag) ?? `\u0000${c.object.key}`).values()];
+}
+
 /**
  * Exemplaire conservé : la date la plus fiable, puis la plus petite clé. La destination dépend de la date et non de
  * l'emplacement source : la clé ne sert qu'à rendre le choix déterministe.
@@ -287,13 +313,7 @@ export function analyzeDuplicates(
   datings: ObjectDating[],
   occupied: OccupiedDestination[] = [],
 ): DuplicateReport {
-  const datingByKey = new Map(datings.map((row) => [row.key, row]));
-  const copies: MediaCopy[] = media
-    .map((object) => {
-      const row = datingByKey.get(object.key);
-      return { object, dating: isSameObject(row, object) ? row : null };
-    })
-    .sort(byKey);
+  const copies = attachDatings(media, datings);
 
   const report: DuplicateReport = {
     mediaCount: media.length,
@@ -313,13 +333,11 @@ export function analyzeDuplicates(
     undatedCount: copies.filter((c) => c.dating === null).length,
   };
 
-  const nameOf = (c: MediaCopy): string => path.basename(c.object.key);
   const kept: MediaCopy[] = [];
-  for (const sameNameAndSize of groupBy(copies, (c) => `${c.object.size}\u0000${comparableName(nameOf(c))}`).values()) {
+  for (const sameNameAndSize of groupSameNameAndSize(copies)) {
     const name = nameOf(sameNameAndSize[0]!);
     const size = sameNameAndSize[0]!.object.size;
-    // Un ETag absent ne se fusionne avec rien : clé propre à l'objet.
-    const contents = [...groupBy(sameNameAndSize, (c) => normalizeEtag(c.object.etag) ?? `\u0000${c.object.key}`).values()];
+    const contents = splitContents(sameNameAndSize);
     if (contents.length > 1) {
       const md5 = new Set(sameNameAndSize.filter((c) => etagKind(c.object.etag) === 'md5').map((c) => normalizeEtag(c.object.etag)));
       if (md5.size > 1) report.etagConflicts.push({ name, size, copies: sameNameAndSize });
@@ -359,7 +377,7 @@ export function analyzeDuplicates(
   report.namingAnomalies = naming.anomalies;
   const folderOf = new Map(entries.map((e) => [e.naming.id, e.naming.folder]));
   for (const [id, name] of naming.names) report.destinations.set(id, folderOf.get(id)! + name);
-  for (const [id, name] of naming.alreadyArchived) report.alreadyArchived.set(id, folderOf.get(id)! + name);
+  for (const [id, key] of naming.alreadyArchived) report.alreadyArchived.set(id, key);
   for (const group of groupBy(entries, (e) => conflictKey(e.naming.folder, e.naming.name)).values()) {
     if (group.length < 2) continue;
     report.collisions.push({

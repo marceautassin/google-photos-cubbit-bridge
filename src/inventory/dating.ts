@@ -15,8 +15,8 @@ import { buildLocalDateTime, LocalDateTime } from '../utils/local-date-time';
 /** Champs EXIF essayés, dans cet ordre. */
 export const EXIF_TAGS = ['DateTimeOriginal', 'CreateDate', 'ModifyDate'] as const;
 
-/** Formats dont exifr sait lire l'EXIF. Vidéos, gif, bmp, webp : aucune requête. */
-export const EXIF_FORMATS = ['jpg', 'jpeg', 'tif', 'tiff', 'heic', 'heif', 'avif', 'png'];
+/** Formats dont exifr sait lire l'EXIF (DNG : structure TIFF). Vidéos, gif, bmp, webp : aucune requête. */
+export const EXIF_FORMATS = ['jpg', 'jpeg', 'tif', 'tiff', 'dng', 'heic', 'heif', 'avif', 'png'];
 
 /**
  * Plages lues depuis le début de l'objet : 128 Ko (10 succès sur 12 mesurés), puis jusqu'à 1 Mo si la date

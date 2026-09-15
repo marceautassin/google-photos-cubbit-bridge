@@ -26,4 +26,12 @@ export interface AppConfig {
     path: string;
     backupPath?: string;
   };
+  /** Réparation de l'archive existante (epics 2 et 3). */
+  repair: {
+    sourcePrefixes: string[]; // emplacements des photos dans le bucket source (D4) ; le reste du bucket est hors périmètre
+    destinationBucket: string; // bucket dédié aux photos (D3)
+    keptAlbums: string[]; // albums partagés conservés tels quels (D1), reconnus par le premier segment après le préfixe
+    ignoredFileNames: string[]; // fichiers techniques exclus du plan (comparés sans casse), comptés et listés
+    ignoredExtensions: string[]; // extensions exclues du plan (sans casse, avec ou sans point), jamais un format média
+  };
 }

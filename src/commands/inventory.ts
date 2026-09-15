@@ -19,6 +19,7 @@ import { scanBucket, summarizeInventory } from '../inventory/inventory';
 import { formatBytes } from '../utils/file-utils';
 import { describeError } from '../utils/format';
 import { getLogger } from '../utils/logger';
+import { runCommand } from './run-command';
 
 interface RawOptions {
   bucket?: string;
@@ -130,6 +131,13 @@ function displayDuplicates(report: DuplicateReport, options: DuplicatesOptions, 
       hint(options.collisions, report.homonyms.length, '--collisions'),
   );
   console.log(chalk.gray(`   Règle : ${DISAMBIGUATION_RULE}`));
+  // Ce rapport ignore les albums conservés (D1) : le plan peut garder une autre copie que l'exemplaire indiqué ici.
+  console.log(
+    chalk.gray(
+      '   Note : le plan de réparation (gpb plan generer) peut conserver l\'exemplaire situé dans un album conservé ' +
+        '(repair.keptAlbums) plutôt que celui indiqué ici, et le copier dans albums/<nom>/.',
+    ),
+  );
   console.log(`   Exemplaires sans date (aucun dossier daté, quarantaine au plan) : ${n(report.withoutFolder.length)}`);
 
   const incoherenceCount = dateMismatches.length + report.etagConflicts.length;
@@ -170,7 +178,13 @@ function displayDuplicates(report: DuplicateReport, options: DuplicatesOptions, 
     console.log(chalk.cyan(`Collisions (${report.collisions.length.toLocaleString('fr-FR')}) :`));
     for (const collision of report.collisions) {
       for (const { copy, finalName } of collision.entries) {
-        console.log(`   ${collision.folder}${finalName ?? chalk.red('(anomalie)')} ← ${copy.object.key}`);
+        const archived = report.alreadyArchived.get(copy.object.key);
+        const target = finalName
+          ? `${collision.folder}${finalName}`
+          : archived
+            ? `${archived} ${chalk.gray('(déjà archivé)')}`
+            : `${collision.folder}${chalk.red('(anomalie)')}`;
+        console.log(`   ${target} ← ${copy.object.key}`);
       }
     }
   }
@@ -308,13 +322,8 @@ function withDisplayOptions(command: Command): Command {
     .option('--limit <n>', 'Nombre maximal d\'emplacements affichés', '50');
 }
 
-async function run(command: () => Promise<void>): Promise<void> {
-  try {
-    await command();
-  } catch (error) {
-    console.error(chalk.red('Erreur lors de l\'inventaire :'), error instanceof Error ? error.message : error);
-    process.exit(1);
-  }
+function run(command: () => Promise<void>): Promise<void> {
+  return runCommand('Erreur lors de l\'inventaire :', command);
 }
 
 async function scanCommand(config: AppConfig, options: InventoryOptions): Promise<void> {

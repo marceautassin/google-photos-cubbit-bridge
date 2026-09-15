@@ -4,17 +4,18 @@ import * as mime from 'mime-types';
 import { getLogger } from './logger';
 import { buildLocalDateTime, LocalDateTime, localDateTimeParts } from './local-date-time';
 
+/** Extension comparable : sans espaces ni point initial, en minuscules (`.JPG` → `jpg`). */
+export const normalizeExtension = (value: string): string => value.trim().toLowerCase().replace(/^\.+/, '');
+
 /**
- * Vérifie si un fichier est supporté basé sur son extension
+ * Vérifie si un fichier est supporté d'après son extension. Seule règle de reconnaissance des médias :
+ * le plan de réparation et la datation doivent classer les fichiers de la même façon.
  */
 export function isSupportedFormat(filename: string, supportedFormats: string[]): boolean {
-  const ext = path.extname(filename).toLowerCase();
-  // Vérifier si les formats supportés incluent le point ou non
-  if (supportedFormats.some(format => format.startsWith('.'))) {
-    return supportedFormats.includes(ext);
-  }
-  // Si les formats n'ont pas de point, comparer sans le point
-  return supportedFormats.includes(ext.slice(1));
+  // Nom après le dernier « / » : un marqueur de dossier (`x.jpg/`) n'a ni nom ni extension
+  const name = filename.slice(filename.lastIndexOf('/') + 1);
+  const extension = normalizeExtension(path.posix.extname(name));
+  return extension !== '' && supportedFormats.some((format) => normalizeExtension(format) === extension);
 }
 
 /**

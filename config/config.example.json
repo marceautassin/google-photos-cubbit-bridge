@@ -16,10 +16,17 @@
       "gif",
       "bmp",
       "webp",
+      "heic",
+      "heif",
+      "dng",
       "mp4",
       "mov",
       "avi",
-      "mkv"
+      "mkv",
+      "m4v",
+      "3gp",
+      "webm",
+      "mts"
     ],
     "preserveFolderStructure": true,
     "chunkSize": 1048576,
@@ -36,5 +43,23 @@
   "database": {
     "path": "./data/app.db",
     "backupPath": "./data/app.backup.db"
+  },
+  "repair": {
+    "sourcePrefixes": [
+      "backup_google_photos/photos/",
+      "2_Personnel/Photos/google_photos/"
+    ],
+    "keptAlbums": [
+      "mariage"
+    ],
+    "ignoredFileNames": [
+      ".DS_Store",
+      "Thumbs.db",
+      "desktop.ini",
+      ".picasa.ini",
+      "Picasa.ini",
+      "Icon\r"
+    ],
+    "ignoredExtensions": []
   }
 }

@@ -2,7 +2,7 @@ jest.mock('../../src/utils/logger', () => ({
   getLogger: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() }),
 }));
 
-import { extractDateFromFilename, parseFilenameDate } from '../../src/utils/file-utils';
+import { extractDateFromFilename, isSupportedFormat, parseFilenameDate } from '../../src/utils/file-utils';
 
 /**
  * Documente le comportement ACTUEL de extractDateFromFilename sur des noms réels du bucket.
@@ -112,5 +112,20 @@ describe('parseFilenameDate (heure locale nominale, sans fuseau)', () => {
     expect(extractDateFromFilename('IMG_19500101_120000.jpg')).toBeNull();
     expect(extractDateFromFilename(`IMG_${new Date().getFullYear() + 5}0101_120000.jpg`)).toBeNull();
     expect(extractDateFromFilename('2019-08-17_18-10-59.jpg')?.getMonth()).toBe(7);
+  });
+});
+
+describe('isSupportedFormat (même règle que le plan de réparation)', () => {
+  it.each([
+    ['a.JPG', ['jpg', '.MP4'], true],
+    ['clip.mp4', ['jpg', '.MP4'], true],
+    ['s.jpg ', ['jpg'], true],
+    ['photo.jpg.bak', ['jpg'], false],
+    ['.jpg', ['jpg'], false],
+    ['README', ['jpg'], false],
+    ['backup/photos/2021/x.jpg/', ['jpg'], false],
+    ['backup/photos/2021/y.JPG', ['jpg'], true],
+  ])('%s avec %j → %s', (filename, formats, attendu) => {
+    expect(isSupportedFormat(filename, formats)).toBe(attendu);
   });
 });

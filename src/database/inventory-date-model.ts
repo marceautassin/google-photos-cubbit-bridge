@@ -89,6 +89,14 @@ export class InventoryDateModel {
     });
   }
 
+  /** Marqueur des datations d'un bucket (nombre, dernière date d'enregistrement) : sert à reconnaître un plan périmé. */
+  stamp(bucket: string): { count: number; lastDatedAt: string | null } {
+    const row = this.db
+      .prepare('SELECT COUNT(*) AS count, MAX(dated_at) AS last FROM inventory_dates WHERE bucket = ?')
+      .get(bucket) as unknown as { count: number; last: string | null };
+    return { count: Number(row.count), lastDatedAt: row.last };
+  }
+
   findAll(bucket: string): ObjectDating[] {
     const rows = this.db
       .prepare(

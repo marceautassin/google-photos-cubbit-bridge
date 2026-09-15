@@ -30,7 +30,10 @@ const defaultConfig: AppConfig = {
   },
   sync: {
     maxConcurrentDownloads: parseInt(process.env.MAX_CONCURRENT_DOWNLOADS || '3'),
-    supportedFormats: ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'mp4', 'mov', 'avi', 'mkv'],
+    supportedFormats: [
+      'jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'heic', 'heif', 'dng',
+      'mp4', 'mov', 'avi', 'mkv', 'm4v', '3gp', 'webm', 'mts',
+    ],
     preserveFolderStructure: true,
     chunkSize: 1024 * 1024, // 1MB
     retryAttempts: 3,
@@ -46,6 +49,17 @@ const defaultConfig: AppConfig = {
   database: {
     path: path.join(DATA_DIR, 'app.db'),
     backupPath: path.join(DATA_DIR, 'app.backup.db'),
+  },
+  repair: {
+    // Les deux emplacements historiques de l'archive photo (PRD, D4). Surchargeables dans config/config.json.
+    sourcePrefixes: ['backup_google_photos/photos/', '2_Personnel/Photos/google_photos/'],
+    destinationBucket: process.env.CUBBIT_DESTINATION_BUCKET || '',
+    keptAlbums: ['mariage'],
+    // Fichiers techniques de systèmes ou de logiciels photo, exclus du plan mais comptés et listés. « Icon » suivi d'un
+    // retour chariot : icône de dossier personnalisée de macOS.
+    ignoredFileNames: ['.DS_Store', 'Thumbs.db', 'desktop.ini', '.picasa.ini', 'Picasa.ini', `Icon${String.fromCharCode(13)}`],
+    // Extensions à ne pas archiver (ex. sidecars « json », « xmp », « aae ») : vide par défaut, à décider sur inventaire réel.
+    ignoredExtensions: [],
   },
 };
 
@@ -87,6 +101,10 @@ export async function loadConfig(): Promise<AppConfig> {
     database: {
       ...defaultConfig.database,
       ...fileConfig.database,
+    },
+    repair: {
+      ...defaultConfig.repair,
+      ...fileConfig.repair,
     },
   };
 

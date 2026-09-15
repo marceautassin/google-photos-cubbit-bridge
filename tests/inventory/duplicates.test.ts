@@ -322,7 +322,7 @@ describe('resolveNames / disambiguateNames', () => {
     expect(pass2.names.has('a')).toBe(false);
 
     const again = disambiguateNames([entry('copie', MONTH, 'img_0044.jpg', `"${md5('b').toUpperCase()}"`)], archive);
-    expect(again.alreadyArchived.get('copie')).toBe('IMG_0044.JPG');
+    expect(again.alreadyArchived.get('copie')).toBe(`${MONTH}IMG_0044.JPG`); // clé complète exacte
     expect(again.names.size).toBe(0);
 
     // Passe 3 : un contenu archivé sous un nom suffixé est reconnu ; le nom suffixé n'est pas réattribué.
@@ -331,7 +331,7 @@ describe('resolveNames / disambiguateNames', () => {
       [entry('c2', MONTH, 'IMG_0044.JPG', md5('c')), entry('d', MONTH, 'IMG_0044.JPG', md5('d'))],
       archive2,
     );
-    expect(pass3.alreadyArchived.get('c2')).toBe('IMG_0044_cccccccc.JPG');
+    expect(pass3.alreadyArchived.get('c2')).toBe(`${MONTH}IMG_0044_cccccccc.JPG`);
     expect(pass3.names.get('d')).toBe('IMG_0044_dddddddd.JPG');
   });
 

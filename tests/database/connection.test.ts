@@ -36,14 +36,14 @@ describe('couche base de données (node:sqlite)', () => {
     const row = getDatabase().prepare('SELECT MAX(version) AS version FROM schema_version').get() as {
       version: number;
     };
-    expect(row.version).toBe(5);
+    expect(row.version).toBe(6);
   });
 
   it('est idempotente à la réouverture', async () => {
     closeDatabase();
     await initDatabase({ path: dbPath });
     const row = getDatabase().prepare('SELECT COUNT(*) AS n FROM schema_version').get() as { n: number };
-    expect(row.n).toBe(5);
+    expect(row.n).toBe(6);
   });
 
   it('crée, relit et met à jour un enregistrement avec champs optionnels absents', async () => {

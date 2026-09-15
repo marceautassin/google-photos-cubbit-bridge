@@ -196,6 +196,47 @@ async function runMigrations(database: DatabaseSync): Promise<void> {
         );
       `,
     },
+    {
+      version: 6,
+      name: 'create_repair_plan',
+      sql: `
+        -- Plan de réparation courant (story 2.4) : un seul plan, identifié par son empreinte (SHA-256 du contenu).
+        -- Remplacé d'un bloc par un plan différent ; les comptes et volumes se recalculent depuis les lignes.
+        CREATE TABLE IF NOT EXISTS repair_plans (
+          id TEXT PRIMARY KEY,
+          source_bucket TEXT NOT NULL,
+          destination_bucket TEXT NOT NULL,
+          config TEXT NOT NULL, -- JSON : instantané normalisé de la configuration effective (plan périmé)
+          index_state TEXT NOT NULL, -- JSON : inventaires source et dédié, datations (plan périmé)
+          executable INTEGER NOT NULL,
+          exclusions TEXT NOT NULL, -- JSON
+          unrecognized TEXT NOT NULL, -- JSON
+          naming_anomalies TEXT NOT NULL, -- JSON
+          violations TEXT NOT NULL, -- JSON
+          generated_at TEXT NOT NULL
+        );
+
+        -- Dernière génération refusée (une ligne au plus), effacée par la génération réussie suivante.
+        CREATE TABLE IF NOT EXISTS repair_plan_refusals (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          refused_at TEXT NOT NULL,
+          reason TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS repair_plan_lines (
+          plan_id TEXT NOT NULL REFERENCES repair_plans(id) ON DELETE CASCADE,
+          position INTEGER NOT NULL,
+          source_key TEXT NOT NULL,
+          size INTEGER NOT NULL,
+          etag TEXT,
+          action TEXT NOT NULL CHECK (action IN ('copier', 'ignorer_doublon', 'quarantaine', 'ignorer_deja_archive')),
+          destination TEXT,
+          kept_key TEXT,
+          reason TEXT NOT NULL,
+          PRIMARY KEY (plan_id, source_key)
+        );
+      `,
+    },
   ];
 
   // Créer la table de versioning si elle n'existe pas

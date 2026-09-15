@@ -18,6 +18,7 @@ import {
   readExifDate,
   selectMedia,
   summarizeDates,
+  EXIF_FORMATS,
 } from '../../src/inventory/dating';
 import { S3ObjectRangeReader } from '../../src/clients/object-range-reader';
 import { BucketObject, ObjectRangeReader } from '../../src/clients/types';
@@ -239,6 +240,29 @@ describe('cascade de datation sur l\'inventaire', () => {
     });
     expect(run.filenameCount).toBe(2);
     expect(getReader).not.toHaveBeenCalled();
+  });
+
+  it('formats ajoutés : EXIF lu pour un DNG (structure TIFF) et un HEIC sans date, vidéos 3gp/mts/m4v/webm sans requête', async () => {
+    const raw = buildTiff({ DateTimeOriginal: '2016:02:20 14:03:11' }, 64);
+    const objects = [
+      obj('p/raw.dng', raw.length),
+      obj('p/clip.3gp', KO),
+      obj('p/clip.mts', KO),
+      obj('p/clip.m4v', KO),
+      obj('p/clip.webm', KO),
+      obj('p/VID_20190817_181059.mts', KO),
+    ];
+    const { reader, calls } = fakeReader({ 'p/raw.dng': raw });
+    const model = new InventoryDateModel();
+    await dateInventory(objects, model, { bucket, supportedFormats: ['dng', '3gp', 'mts', 'm4v', 'webm'], prefixes: [], getReader: () => reader });
+    const byKey = Object.fromEntries(model.findAll(bucket).map((d) => [path.basename(d.key), d]));
+    expect(byKey['raw.dng']).toMatchObject({ source: 'exif', takenAt: '2016-02-20T14:03:11', detail: 'DateTimeOriginal' });
+    for (const video of ['clip.3gp', 'clip.mts', 'clip.m4v', 'clip.webm']) {
+      expect(byKey[video]).toMatchObject({ source: 'indeterminee', takenAt: null, exifRead: false });
+    }
+    expect(byKey['VID_20190817_181059.mts']).toMatchObject({ source: 'nom_fichier', takenAt: '2019-08-17T18:10:59' });
+    expect(new Set(calls.map((c) => c.key))).toEqual(new Set(['p/raw.dng']));
+    expect(EXIF_FORMATS).toEqual(expect.arrayContaining(['heic', 'heif', 'dng']));
   });
 
   it('restreint aux préfixes demandés', async () => {
