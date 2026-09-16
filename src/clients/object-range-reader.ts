@@ -19,6 +19,17 @@ export class S3ObjectRangeReader implements ObjectRangeReader {
     if (!response.Body) {
       throw new Error(`Réponse S3 incomplète : corps absent pour ${key}`);
     }
+    // Refus d'une réponse non partielle AVANT de lire le corps : un serveur qui ignorerait l'en-tête Range renverrait
+    // l'objet entier (plusieurs Go pour un zip Takeout).
+    const status = response.$metadata?.httpStatusCode;
+    const range = /^bytes (\d+)-(\d+)\/(\d+|\*)$/.exec(response.ContentRange ?? '');
+    if (status !== 206 || !range || Number(range[1]) !== start || Number(range[2]) > end || Number(range[2]) < start) {
+      (response.Body as { destroy?: () => void }).destroy?.();
+      throw new Error(
+        `Réponse S3 non partielle pour ${key} (statut ${status ?? 'inconnu'}, Content-Range « ${response.ContentRange ?? 'absent'} » ` +
+          `pour bytes=${start}-${end}) : lecture abandonnée`,
+      );
+    }
     return response.Body.transformToByteArray();
   }
 }

@@ -208,7 +208,7 @@ interface DatesOptions {
   indeterminees?: boolean;
 }
 
-function requireValidConfig(config: AppConfig): void {
+export function requireValidConfig(config: AppConfig): void {
   const errors = validateConfig(config);
   if (errors.length > 0) {
     throw new Error(`configuration incomplète (${errors.join(', ')}). Renseignez le fichier .env.`);

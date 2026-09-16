@@ -228,7 +228,7 @@ function toLocalDateTime(match: RegExpMatchArray): LocalDateTime | null {
 
 /**
  * Extrait la date du nom de fichier sous forme de `Date` en heure locale (contrat historique de
- * `takeout-parser.ts`, dont la cascade sera revue en story 4.2). Bornée à [1970, année courante + 1].
+ * l'ancien import Takeout, supprimé en story 4.1 ; cascade revue en story 4.2). Bornée à [1970, année courante + 1].
  */
 export function extractDateFromFilename(filename: string): Date | null {
   const date = parseFilenameDate(filename);

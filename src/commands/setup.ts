@@ -2,7 +2,6 @@ import { Command } from 'commander';
 import * as readline from 'readline';
 import chalk from 'chalk';
 import { saveConfig, loadConfig, validateConfig } from '../config';
-import { AppConfig } from '../config/types';
 
 export function register(program: Command): void {
   program
@@ -33,7 +32,7 @@ async function setupCommand(options: { reset?: boolean }): Promise<void> {
     console.log(chalk.blue.bold('🚀 Configuration Google Photos → Cubbit Bridge\\n'));
 
     // Charger la configuration existante
-    let config = await loadConfig();
+    const config = await loadConfig();
     
     if (options.reset) {
       console.log(chalk.yellow('Réinitialisation de la configuration...\\n'));
@@ -93,8 +92,8 @@ async function setupCommand(options: { reset?: boolean }): Promise<void> {
 
     if (errors.length === 0) {
       console.log(chalk.blue('📋 Prochaines étapes:'));
-      console.log('  1. Importez une archive avec ' + chalk.cyan('gpb takeout import <chemin-takeout>'));
-      console.log('  2. Envoyez les médias importés vers Cubbit avec ' + chalk.cyan('gpb sync'));
+      console.log('  1. Validez vos exports Takeout avec ' + chalk.cyan('gpb takeout valider'));
+      console.log('  2. L\'archivage des nouveaux exports sera reconstruit en epic 4 (gpb sync est désactivée)');
     } else {
       console.log(chalk.yellow('⚠️  Corrigez les erreurs de configuration avant de continuer.'));
     }
@@ -102,10 +101,4 @@ async function setupCommand(options: { reset?: boolean }): Promise<void> {
   } finally {
     rl.close();
   }
-}
-
-// Fonction utilitaire pour masquer les valeurs sensibles
-function maskSensitive(value: string): string {
-  if (!value || value.length <= 4) return value;
-  return value.substring(0, 2) + '*'.repeat(value.length - 4) + value.substring(value.length - 2);
 }

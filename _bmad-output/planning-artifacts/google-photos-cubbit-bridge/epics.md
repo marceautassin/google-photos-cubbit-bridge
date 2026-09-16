@@ -67,7 +67,7 @@ qu'on **corrige**, pas seulement ce qu'on ajoute.
 
 ### NonFunctional Requirements
 
-- **NFR-1 — Cloisonnement porté par le code** (révisé le 2026-09-15 : les clés Cubbit donnent accès à tout l'espace de travail) : toute écriture S3 passe par un unique point d'accès qui refuse tout bucket autre que `marceau-photos` et toute clé hors de `photos/`, `albums/` et `quarantaine/`, et qui n'expose aucune suppression. `marceau-photos/backups/` (exports Takeout d'août 2026, exemplaires uniques) n'est jamais écrit.
+- **NFR-1 — Cloisonnement porté par le code** (révisé le 2026-09-15 : les clés Cubbit donnent accès à tout l'espace de travail) : toute écriture S3 passe par un unique point d'accès qui refuse tout bucket autre que `marceau-photos` et toute clé hors de `photos/`, `albums/` et `quarantaine/`, et qui n'expose aucune suppression. Il expose la copie serveur (epic 3) et, à partir de l'epic 4, l'envoi d'un fichier local, sous les mêmes gardes et sans jamais écraser. `marceau-photos/backups/` (exports Takeout d'août 2026, exemplaires uniques) est lu, jamais écrit ni supprimé.
 - **NFR-2 — Lecture seule sur le bucket mixte** : pendant la migration, l'outil n'effectue aucune suppression dans `marceau`. Marceau supprime les sources lui-même après vérification.
 - **NFR-3 — Simulation obligatoire** : toute opération destructive est précédée d'une simulation inspectable et d'une confirmation explicite.
 - **NFR-4 — Copier avant supprimer** : toute suppression effectuée par l'outil — hors migration, où il n'en fait aucune — n'intervient qu'après confirmation que la copie de destination existe.
@@ -193,13 +193,169 @@ doublons supprimés, espace récupéré, fichiers en quarantaine.
 
 ### Epic 4 : La boucle Takeout
 
-Marceau peut archiver un nouvel export Takeout **et vider Google Photos en confiance**. Le
-cœur de l'epic est l'identité de média stable d'un export à l'autre (Q3) : sans elle, la
-boucle répétable est impossible et l'archive entière serait réuploadée à chaque passe. La
-vérification est incluse plutôt que séparée — c'est la même séance de travail, et le même code.
-**FRs couvertes :** FR-9, FR-10, FR-11, FR-12, FR-13, FR-14, FR-15, FR-16, FR-17
+Marceau peut archiver un export Takeout et supprimer ensuite, en confiance, les zips et les
+photos correspondantes dans Google Photos.
 
-### Epic 5 : La marche à suivre
+**Réalité constatée le 2026-09-16 (révision de l'epic avant développement)**, par lecture des
+tables des matières des zips, sans téléchargement :
+- Les exports ne sont pas sur le poste : ce sont des zips déposés dans
+  `marceau-photos/backups/` (export du 6 août en 4 parties, 7,02 Go, 4 809 fichiers ; export du
+  10 août, 1 photo). Marceau a déjà supprimé une partie de ces photos de Google Photos : **les
+  zips sont l'unique exemplaire** d'une partie d'entre elles.
+- Format réel : dossiers `Takeout/Google Photos/Photos de 2020…` avec **espaces insécables**
+  (`Google\u00a0Photos`, `Photos de\u00a02020`), métadonnées en
+  `<média>.supplemental-metadata.json` (et non `<média>.json`), métadonnées d'album
+  `métadonnées.json`, 9 médias sans JSON. Le parseur et `docs/TAKEOUT_STRUCTURE.md` actuels
+  décrivent l'ancien format (`Photos from YYYY`, `.json`) et rateraient tout.
+- Sur 2 407 médias : 1 997 ont déjà un objet de même nom et même taille dans l'archive, 121 un
+  homonyme de taille différente, 289 sont nouveaux (dont les albums « Baptême Raphaëlle » et
+  « tenerife 2026 »).
+
+**Décisions de Marceau (2026-09-16)** : albums « Baptême Raphaëlle » et « tenerife 2026 »
+conservés dans `albums/<nom>/` (« 2019 à imprimer » classé par date) ; un homonyme de contenu
+différent est copié sous un nom suffixé (règle Q1) ; les zips sont traités comme exemplaire
+unique jusqu'à l'attestation.
+
+**Conséquences techniques** :
+- Le point d'accès en écriture unique (NFR-1) gagne une capacité d'**envoi** (dépôt d'un
+  fichier local), soumise aux mêmes gardes (bucket dédié, espaces `photos/`, `albums/`,
+  `quarantaine/`, jamais `backups/`, jamais d'écrasement, aucune suppression).
+- Les zips de `backups/` sont lus (téléchargement local), jamais écrits ni supprimés.
+- Le code Takeout hérité (`takeout import`, parseur, scanner, extracteur, `archive`, `sync`,
+  `resume`) est remplacé, pas réparé.
+
+### Story 4.1 : Valider une archive Takeout avant traitement
+
+En tant que Marceau,
+je veux savoir si un export Takeout est exploitable avant de lancer une passe,
+afin de ne pas perdre une soirée sur un export incomplet ou mal compris.
+
+**Exigences :** FR-9
+
+**Acceptance Criteria :**
+
+**Étant donné** des zips Takeout dans `marceau-photos/backups/` (ou un zip local)
+**Quand** je lance la validation
+**Alors** l'outil lit la table des matières de chaque zip sans le télécharger en entier
+**Et** regroupe les parties d'un même export (`takeout-<horodatage>-1-001.zip`, `-002`…)
+**Et** vérifie que chaque partie est lisible et complète
+
+**Étant donné** le format réel des exports (espaces insécables, `Photos de AAAA` ou
+`Photos from AAAA`, `.supplemental-metadata.json` et ses variantes tronquées, `métadonnées.json`)
+**Quand** la validation s'exécute
+**Alors** chaque média est reconnu et apparié à son fichier de métadonnées quand il existe
+**Et** les médias sans métadonnées et les fichiers non reconnus sont comptés et listés
+
+**Étant donné** un export
+**Quand** la validation se termine
+**Alors** elle affiche, par dossier : médias, volume, albums détectés, médias sans métadonnées
+**Et** aucun octet n'est écrit dans aucun bucket
+
+### Story 4.2 : Dater et identifier chaque média de façon stable
+
+En tant que Marceau,
+je veux que chaque photo du Takeout soit datée correctement et reconnue si elle est déjà archivée,
+afin qu'un export ne réenvoie pas mes photos déjà sauvegardées.
+
+**Exigences :** FR-10, FR-11
+
+**Acceptance Criteria :**
+
+**Étant donné** un média accompagné de ses métadonnées Takeout
+**Quand** sa date est déterminée
+**Alors** `photoTakenTime` est utilisé en priorité, puis le nom de fichier, puis l'EXIF
+**Et** la source de la date est enregistrée ; jamais la date du fichier extrait ni la date courante
+
+**Étant donné** un média du Takeout
+**Quand** son identité est calculée
+**Alors** elle repose sur son contenu (empreinte calculée localement) et ne dépend d'aucun chemin local
+
+**Étant donné** un média et l'inventaire du bucket dédié
+**Quand** l'outil cherche s'il est déjà archivé
+**Alors** il est « déjà archivé confirmé » si son empreinte égale l'ETag MD5 d'un objet archivé
+**Et** les correspondances non confirmables (ETag archivé non comparable) sont listées à part,
+jamais présumées identiques en silence
+
+**Étant donné** un même média présent dans un dossier d'année et dans un dossier d'album du Takeout
+**Quand** l'export est analysé
+**Alors** il n'est compté et envoyé qu'une fois, dans l'emplacement voulu par la règle des albums
+
+### Story 4.3 : Archiver uniquement les médias nouveaux
+
+En tant que Marceau,
+je veux un plan d'archivage relu avant envoi, puis l'envoi des seules photos absentes,
+afin de ne rien réenvoyer et de ne rien écraser.
+
+**Exigences :** FR-12, FR-13, FR-15
+
+**Acceptance Criteria :**
+
+**Étant donné** un export validé et daté
+**Quand** je génère le plan d'archivage
+**Alors** chaque média est une ligne : envoyer, déjà archivé, doublon interne, quarantaine
+**Et** les destinations suivent exactement le schéma de l'epic 3 (règle Q1 comprise, en tenant
+compte des objets déjà présents dans le bucket dédié)
+**Et** les albums désignés dans la configuration vont dans `albums/<nom>/`
+
+**Étant donné** un plan vérifié et une confirmation explicite par son empreinte
+**Quand** l'envoi démarre
+**Alors** chaque média est envoyé par le point d'accès en écriture unique, sans jamais écraser un
+objet existant, puis vérifié (taille, et empreinte quand elle est comparable)
+**Et** les zips de `backups/` ne sont jamais écrits ni supprimés
+
+**Étant donné** une passe en cours
+**Quand** je regarde la console
+**Alors** les compteurs envoyés, ignorés, en erreur et le volume restant sont visibles
+
+### Story 4.4 : Reprendre une passe d'archivage interrompue
+
+En tant que Marceau,
+je veux qu'une passe coupée reprenne où elle en était,
+afin qu'une soirée de travail ne soit pas perdue.
+
+**Exigences :** FR-14
+
+**Acceptance Criteria :**
+
+**Étant donné** une passe interrompue (coupure, `Ctrl-C`, extinction)
+**Quand** je la relance
+**Alors** elle reprend aux médias non traités, sans rien réenvoyer ni écraser
+**Et** le résultat final est identique à celui d'une passe ininterrompue
+
+**Étant donné** des zips déjà téléchargés et extraits localement
+**Quand** je relance
+**Alors** ils sont réutilisés s'ils sont intacts, sans nouveau téléchargement
+
+### Story 4.5 : Attester que tout est bien sauvegardé avant que je supprime
+
+En tant que Marceau,
+je veux une attestation fichier par fichier avant de supprimer les zips et les photos dans Google Photos,
+afin de ne jamais détruire un original en me fiant à une copie que je n'ai pas vérifiée.
+
+**Exigences :** FR-16, FR-17
+
+**Acceptance Criteria :**
+
+**Étant donné** un export archivé
+**Quand** je lance la vérification sur un inventaire du bucket dédié postérieur à la passe
+**Alors** chaque média de l'export est rapproché d'un objet présent et conforme dans l'archive
+**Et** le résultat est rendu fichier par fichier
+
+**Étant donné** un média manquant, non conforme ou seulement présumé archivé
+**Quand** la vérification s'exécute
+**Alors** l'écart est listé sous une forme actionnable
+**Et** aucune attestation n'est délivrée tant qu'un écart subsiste
+
+**Étant donné** une vérification sans écart
+**Quand** l'attestation est délivrée
+**Alors** elle liste les zips exacts qu'il est possible de supprimer de `backups/`
+**Et** exporte la liste des médias couverts (nom, date de prise de vue, album) pour retrouver et
+supprimer ceux qui restent dans Google Photos
+**Et** elle rappelle que ces suppressions appartiennent à Marceau et que l'outil n'y touchera jamais
+
+---
+
+## Epic 5 : La marche à suivre
 
 Marceau refait le cycle complet six mois plus tard sans rien demander à personne et sans lire
 le code. Le runbook décrit la procédure de bout en bout ; le README et le QUICKSTART cessent de

@@ -4,7 +4,11 @@ import { S3ObjectRangeReader } from '../../src/clients/object-range-reader';
 describe('S3ObjectRangeReader (lecture seule, GET partiel)', () => {
   it("n'envoie qu'un GetObject avec l'en-tête Range et renvoie les octets", async () => {
     const client = {
-      send: jest.fn(async () => ({ Body: { transformToByteArray: async () => new Uint8Array([1, 2, 3]) } })),
+      send: jest.fn(async () => ({
+        $metadata: { httpStatusCode: 206 },
+        ContentRange: 'bytes 0-2/3',
+        Body: { transformToByteArray: async () => new Uint8Array([1, 2, 3]) },
+      })),
     };
     const reader = new S3ObjectRangeReader(client as never, 'marceau');
 
@@ -18,6 +22,28 @@ describe('S3ObjectRangeReader (lecture seule, GET partiel)', () => {
       Key: 'photos/IMG_0005.JPG',
       Range: 'bytes=0-131071',
     });
+  });
+
+  it.each([
+    ['statut 200 (objet entier)', 200, 'bytes 0-99/100'],
+    ['Content-Range absent', 206, undefined],
+    ['début différent', 206, 'bytes 5-10/100'],
+    ['fin au-delà de la plage demandée', 206, 'bytes 0-99/100'],
+    ['Content-Range illisible', 206, 'octets 0-10'],
+  ])('refuse une réponse non partielle sans lire le corps : %s', async (_label, httpStatusCode, ContentRange) => {
+    const body = { transformToByteArray: jest.fn(async () => new Uint8Array(100)), destroy: jest.fn() };
+    const client = { send: jest.fn(async () => ({ $metadata: { httpStatusCode }, ContentRange, Body: body })) };
+    const reader = new S3ObjectRangeReader(client as never, 'marceau-photos');
+    await expect(reader.readRange('backups/t.zip', 0, 10)).rejects.toThrow('non partielle');
+    expect(body.transformToByteArray).not.toHaveBeenCalled();
+    expect(body.destroy).toHaveBeenCalled();
+  });
+
+  it('accepte une fin bornée par la taille de l\'objet', async () => {
+    const client = {
+      send: jest.fn(async () => ({ $metadata: { httpStatusCode: 206 }, ContentRange: 'bytes 0-2/3', Body: { transformToByteArray: async () => new Uint8Array(3) } })),
+    };
+    await expect(new S3ObjectRangeReader(client as never, 'marceau').readRange('a.jpg', 0, 131071)).resolves.toHaveLength(3);
   });
 
   it('refuse une réponse sans corps', async () => {

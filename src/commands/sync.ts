@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import chalk from 'chalk';
+import { registerDisabledCommand } from './disabled-command';
 
 /**
  * `gpb sync` et `gpb resume` : DÉSACTIVÉES (story 3.1). L'ancienne synchronisation déposait les médias par envois
@@ -13,17 +13,6 @@ export const DISABLED_MESSAGE =
   'Rien n\'a été envoyé.';
 
 export function register(program: Command): void {
-  for (const [name, description] of [
-    ['sync', 'Envoyer vers Cubbit les médias Takeout importés en attente'],
-    ['resume', 'Reprendre une synchronisation interrompue'],
-  ] as const) {
-    program
-      .command(name)
-      .description(`(désactivée) ${description}`)
-      .allowUnknownOption()
-      .action(() => {
-        console.error(chalk.red(`❌ gpb ${name} : ${DISABLED_MESSAGE}`));
-        process.exitCode = 1;
-      });
-  }
+  registerDisabledCommand(program, 'sync', 'Envoyer vers Cubbit les médias Takeout importés en attente', DISABLED_MESSAGE);
+  registerDisabledCommand(program, 'resume', 'Reprendre une synchronisation interrompue', DISABLED_MESSAGE);
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander';
-import { loadConfig, validateConfig } from './config';
+import { loadConfig } from './config';
 import { initLogger } from './utils/logger';
 import { initDatabase } from './database/connection';
 import * as setupCommand from './commands/setup';
@@ -12,7 +12,6 @@ import * as inventoryCommand from './commands/inventory';
 import * as planCommand from './commands/plan';
 import * as etatCommand from './commands/etat';
 import * as reparationCommand from './commands/reparation';
-import { createArchiveCommand } from './commands/archive';
 
 const program = new Command();
 
@@ -42,7 +41,6 @@ async function main(): Promise<void> {
     planCommand.register(program, config);
     etatCommand.register(program, config);
     reparationCommand.register(program, config);
-    program.addCommand(createArchiveCommand());
 
     // Commande par défaut (aide)
     program.action(() => {

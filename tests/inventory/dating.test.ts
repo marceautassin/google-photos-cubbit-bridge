@@ -152,7 +152,12 @@ describe('lecture EXIF', () => {
     const client = {
       send: jest.fn(async (command: GetObjectCommand) => {
         const [, start, end] = command.input.Range!.match(/bytes=(\d+)-(\d+)/)!.map(Number) as [number, number, number];
-        return { Body: { transformToByteArray: async () => new Uint8Array(FAR_EXIF.subarray(start, end + 1)) } };
+        const last = Math.min(end, FAR_EXIF.length - 1);
+        return {
+          $metadata: { httpStatusCode: 206 },
+          ContentRange: `bytes ${start}-${last}/${FAR_EXIF.length}`,
+          Body: { transformToByteArray: async () => new Uint8Array(FAR_EXIF.subarray(start, end + 1)) },
+        };
       }),
     };
     const reader = new S3ObjectRangeReader(client as never, 'marceau');

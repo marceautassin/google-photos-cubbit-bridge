@@ -1,15 +1,3 @@
-export interface MediaItem {
-  id: string;
-  filename: string;
-  mimeType: string;
-  creationTime: Date;
-  width?: number;
-  height?: number;
-  description?: string;
-  baseUrl: string;
-  productUrl: string;
-}
-
 export enum SyncStatus {
   PENDING = 'pending',
   DOWNLOADING = 'downloading',

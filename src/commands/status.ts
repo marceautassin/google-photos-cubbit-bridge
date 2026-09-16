@@ -131,7 +131,7 @@ async function statusCommand(_config: AppConfig, options: any): Promise<void> {
     }
     
     if (stats.errorRecords > 0) {
-      console.log(`   • ${chalk.cyan('gpb takeout import <chemin-takeout> --force')} - Réimporter pour renvoyer les éléments en erreur`);
+      console.log(`   • ${chalk.cyan('gpb takeout valider')} - Valider un export Takeout (l'archivage est reconstruit en epic 4)`);
       
       if (!options.detailed) {
         console.log(`   • ${chalk.cyan('gpb status --detailed')} - Voir les détails des erreurs`);
