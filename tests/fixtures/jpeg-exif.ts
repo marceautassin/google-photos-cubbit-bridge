@@ -6,6 +6,7 @@ export interface ExifDates {
   DateTimeOriginal?: string; // format EXIF « AAAA:MM:JJ HH:MM:SS »
   CreateDate?: string;
   ModifyDate?: string;
+  OffsetTimeOriginal?: string; // « +01:00 »
 }
 
 const ASCII = 2;
@@ -51,6 +52,7 @@ function tiffBlock(dates: ExifDates, exifIfdOffset?: number): Buffer {
   const exif: Entry[] = [];
   if (dates.DateTimeOriginal) exif.push({ tag: 0x9003, type: ASCII, value: dates.DateTimeOriginal });
   if (dates.CreateDate) exif.push({ tag: 0x9004, type: ASCII, value: dates.CreateDate });
+  if (dates.OffsetTimeOriginal) exif.push({ tag: 0x9011, type: ASCII, value: dates.OffsetTimeOriginal });
 
   // Taille de l'IFD0 connue d'avance : pointeur vers le sous-IFD Exif placé après ses données.
   const ifd0Entries: Entry[] = [...ifd0, { tag: 0x8769, type: LONG, value: 0 }];

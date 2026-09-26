@@ -14,6 +14,8 @@ export interface ZipRef {
   name: string;
   location: string;
   size: number;
+  key?: string; // clé dans le bucket (zip distant)
+  etag?: string | null; // ETag listé (zip distant)
   open(): Promise<ZipSource>;
 }
 

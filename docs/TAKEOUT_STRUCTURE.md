@@ -91,15 +91,15 @@ Règles (`src/takeout/takeout-layout.ts`, fonctions pures testées) :
    non exploitable. Sans aucun fichier porteur : JSON orphelin.
 3. **Vidéo de Live Photo** : vidéo `.mp4`/`.mov` sans JSON dont le nom sans extension est porté par exactement un autre
    fichier du dossier, une image appariée. Elle n'est pas appariée au JSON de l'image ; elle est listée à part, et la
-   décision de date revient à la story 4.2.
+   date est décidée par l'analyse (story 4.2, ci-dessous).
 4. Tout autre média sans JSON est listé **sans métadonnées** ; un JSON sans média est listé non reconnu et déclenche
    l'avertissement « partie possiblement manquante ». La casse compte (Google la préserve).
 
 ## Contenu des métadonnées
 
-Le contenu des JSON n'est pas lu par la validation (story 4.1). La date de prise de vue attendue est
-`photoTakenTime.timestamp` (secondes Unix, UTC), lue en tête de cascade par la story 4.2, qui confirmera la structure
-réelle sur les exports.
+La validation (story 4.1) ne lit pas le contenu des JSON. L'analyse (story 4.2) n'y lit que
+`photoTakenTime.timestamp` : secondes Unix, **UTC**, date de prise de vue. `creationTime` est la date d'envoi chez
+Google : jamais utilisée. Un JSON illisible ou sans `photoTakenTime` fait passer à la source suivante, raison consignée.
 
 ## Validation
 
@@ -122,3 +122,45 @@ Verdict **non exploitable** si : une partie est illisible, vide ou sans aucun m�
 numérotation, le nombre de parties diffère de `--parties`, un même chemin est présent deux fois, un JSON est ambigu, ou
 aucun média n'est reconnu. Les médias sans métadonnées et les fichiers non reconnus sont listés
 sans bloquer. Code de sortie 1 si un export est non exploitable. Rien n'est écrit, ni dans un bucket ni en base.
+
+## Analyse (story 4.2)
+
+```
+gpb takeout analyser --export 20260806T062636Z --parties 4 [--dossier <chemin>] [--fuseau Europe/Paris] [--sortie analyse.csv analyse.json]
+```
+
+1. **Prérequis** : inventaire local du bucket dédié (`gpb inventory scan --bucket marceau-photos`), validation 4.1
+   exploitable avec le nombre de parties confirmé.
+2. **Téléchargement** des parties dans `data/takeout/<export>/` (non versionné), GET complet en lecture seule. Espace
+   disque vérifié avant (taille × 1,1) ; écriture dans `<zip>.partiel` (supprimé en cas d'échec), synchronisation du
+   fichier et du dossier, renommage. **Vérification** : taille et ETag de la réponse égaux au listing ; ETag MD5 simple
+   recalculé ; ETag multipart `<md5>-N` recalculé pour les tailles de partie plausibles (5, 8, 10, 15, 16, 32, 50, 64,
+   100 Mio ou Mo d'abord, puis parties égales, puis autres multiples). Constat réel : parties de 5 Mio. S3 ne conserve pas
+   la taille des parties : si aucune ne correspond (tailles essayées affichées), le **répertoire central local doit être
+   identique entrée par entrée à celui du zip distant** (lu par plages), puis toutes les entrées passent CRC-32 et taille.
+   Un zip non vérifié est refusé et supprimé. Marqueur `<zip>.verification.json` : une relance réutilise le zip.
+3. **Lecture en flux** de chaque média depuis le zip local (en-tête local comparé au répertoire central : nom et
+   méthode ; deflate ; CRC-32 et taille), sans extraction : MD5 du contenu (identité), premier Mio pour l'EXIF, boîte
+   `mvhd` des vidéos de Live Photo, ETag multipart recalculé pour les homonymes archivés de même taille.
+4. **Date**, source tracée. Règle révisée sur les données réelles (1 seule discordance de mois entre nom et
+   `photoTakenTime` sur 2 149 : un WhatsApp) :
+   - avec `photoTakenTime` : une date du nom de fichier ou de l'EXIF `DateTimeOriginal` à 14 h au plus de l'instant est
+     retenue (heure de l'appareil, juste en voyage) ; à plus de 14 h, elle est retenue quand même avec l'alerte
+     « discordance JSON » (WhatsApp, retouches ; `creationTime` proche signalé) ; sinon l'instant, avec l'EXIF
+     `OffsetTimeOriginal` s'il existe, sinon converti dans `--fuseau` (défaut `Europe/Paris`) ;
+   - sans `photoTakenTime` : nom de fichier, puis EXIF, sinon indéterminée ;
+   - vidéo de Live Photo : date QuickTime (`mvhd`, UTC), sinon `photoTakenTime` de l'image compagnon ; écart de plus
+     d'un jour signalé.
+   Un nom de fichier daté à minuit pile (WhatsApp `IMG-AAAAMMJJ-WA…`) vaut pour la journée entière.
+   La règle est **mesurée** : concordance du mois retenu avec le dossier `photos/AAAA/AAAA-MM/` des médias confirmés,
+   et ce qu'aurait donné `photoTakenTime` dans le fuseau et en UTC.
+5. **Doublons internes** (même MD5 et taille) : un représentant, dans un album conservé (`takeout.keptAlbums`) sinon la
+   première occurrence. Les cas de la règle des albums à trancher en 4.3 sont comptés.
+6. **Déjà archivé** (inventaire local du bucket dédié, espaces `photos/`, `albums/`, `quarantaine/` seulement) :
+   `deja_archive` si le MD5 égale l'ETag MD5 d'un objet, ou si l'ETag multipart d'un homonyme de même taille est retrouvé
+   sur le contenu (preuve consignée) ; `non_confirmable` si un homonyme de même taille a un ETag multipart non retrouvé
+   ou absent ; `homonyme_different` si un objet de même nom existe ; sinon `nouveau`. Les médias archivés seulement en
+   `quarantaine/` sont listés à part (datables désormais).
+7. **Persistance** : tables `takeout_analyses` et `takeout_media` (migration 9), remplacées d'un bloc à chaque analyse.
+   L'analyse ne vaut que pour les mêmes zips (nom, taille, ETag), le même inventaire du bucket dédié et les mêmes albums
+   conservés. Rien n'est écrit dans aucun bucket.

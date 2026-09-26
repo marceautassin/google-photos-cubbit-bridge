@@ -40,3 +40,54 @@ export function buildLocalDateTime(
 export function localDateTimeParts(value: LocalDateTime): number[] {
   return value.split(/[-T:]/).map(Number);
 }
+
+/**
+ * Heure locale nominale d'un instant (secondes depuis l'époque Unix, UTC) dans un fuseau IANA explicite (story 4.2 :
+ * `photoTakenTime` des métadonnées Takeout, `mvhd` des vidéos). Ne dépend jamais du fuseau de la machine ; `null` si
+ * l'instant n'est pas représentable. Lève une `RangeError` si le fuseau est inconnu.
+ */
+export function instantToLocalDateTime(epochSeconds: number, timeZone: string): LocalDateTime | null {
+  const date = new Date(epochSeconds * 1000);
+  if (!Number.isFinite(epochSeconds) || Number.isNaN(date.getTime())) return null;
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-GB', {
+      timeZone,
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    })
+      .formatToParts(date)
+      .map((part) => [part.type, part.value]),
+  );
+  return buildLocalDateTime(Number(parts.year), Number(parts.month), Number(parts.day), Number(parts.hour), Number(parts.minute), Number(parts.second));
+}
+
+/** Vérifie qu'un fuseau IANA est connu ; lève une erreur en français sinon. */
+export function checkTimeZone(timeZone: string): void {
+  try {
+    new Intl.DateTimeFormat('en-GB', { timeZone });
+  } catch {
+    throw new Error(`fuseau horaire inconnu « ${timeZone} » (attendu : un nom IANA, ex. Europe/Paris)`);
+  }
+}
+
+/** Secondes « nominales » d'une `LocalDateTime` (lue comme si elle était en UTC), pour mesurer des écarts. */
+export function localDateTimeSeconds(value: LocalDateTime): number {
+  const [year, month, day, hour, minute, second] = localDateTimeParts(value) as [number, number, number, number, number, number];
+  return Date.UTC(year, month - 1, day, hour, minute, second) / 1000;
+}
+
+/** Heure locale nominale d'un instant avec un décalage fixe `±HH:MM` (EXIF `OffsetTimeOriginal`) ; `null` si invalide. */
+export function instantWithOffset(epochSeconds: number, offset: string): LocalDateTime | null {
+  const match = /^([+-])(\d{2}):(\d{2})$/.exec(offset);
+  if (!match || Number(match[2]) > 14 || Number(match[3]) > 59) return null;
+  const shifted = new Date((epochSeconds + (match[1] === '-' ? -1 : 1) * (Number(match[2]) * 3600 + Number(match[3]) * 60)) * 1000);
+  if (Number.isNaN(shifted.getTime())) return null;
+  return buildLocalDateTime(
+    shifted.getUTCFullYear(), shifted.getUTCMonth() + 1, shifted.getUTCDate(), shifted.getUTCHours(), shifted.getUTCMinutes(), shifted.getUTCSeconds(),
+  );
+}

@@ -1,5 +1,4 @@
 import * as winston from 'winston';
-import * as path from 'path';
 import { AppConfig } from '../config/types';
 
 let logger: winston.Logger | null = null;

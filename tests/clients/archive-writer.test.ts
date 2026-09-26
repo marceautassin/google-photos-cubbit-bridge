@@ -227,6 +227,8 @@ const WRITER_FILE = 'clients/archive-writer.ts';
 const ALLOWED_IMPORTS: Record<string, string[]> = {
   [WRITER_FILE]: ['CopyObjectCommand', 'HeadBucketCommand', 'HeadObjectCommand', 'S3Client'],
   'clients/bucket-lister.ts': ['ListObjectsV2Command', 'S3Client'],
+  // Story 4.2 : téléchargement entier des zips Takeout de backups/, en lecture seule (GET complet, rien d'autre).
+  'clients/object-downloader.ts': ['GetObjectCommand', 'S3Client'],
   'clients/object-range-reader.ts': ['GetObjectCommand', 'S3Client'],
   'clients/s3-client.ts': ['S3Client'],
 };

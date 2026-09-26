@@ -37,4 +37,8 @@ export interface AppConfig {
     ignoredFileNames: string[]; // fichiers techniques exclus du plan (comparés sans casse), comptés et listés
     ignoredExtensions: string[]; // extensions exclues du plan (sans casse, avec ou sans point), jamais un format média
   };
+  /** Archivage des exports Takeout (epic 4). */
+  takeout: {
+    keptAlbums: string[]; // albums Takeout conservés dans albums/<nom>/ (comparés en NFC sans casse) ; les autres sont classés par date
+  };
 }

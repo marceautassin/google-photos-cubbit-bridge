@@ -251,7 +251,7 @@ describe('RepairExecutionModel (journal d\'exécution, migrations 7 et 8)', () =
 
       await initDatabase({ path: file });
       const version = getDatabase().prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-      expect(version.v).toBe(8);
+      expect(version.v).toBe(MIGRATIONS[MIGRATIONS.length - 1]!.version);
       const journal = new RepairExecutionModel();
       expect(journal.findStates('plan-1')).toEqual(
         new Map([

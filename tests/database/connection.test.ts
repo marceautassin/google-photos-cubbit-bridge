@@ -36,7 +36,7 @@ describe('couche base de données (node:sqlite)', () => {
     const row = getDatabase().prepare('SELECT MAX(version) AS version FROM schema_version').get() as {
       version: number;
     };
-    expect(row.version).toBe(8);
+    expect(row.version).toBe(9);
   });
 
   it('écritures durables : synchronous = FULL (une ligne copie_en_cours validée survit à une coupure de courant)', () => {
@@ -48,7 +48,7 @@ describe('couche base de données (node:sqlite)', () => {
     closeDatabase();
     await initDatabase({ path: dbPath });
     const row = getDatabase().prepare('SELECT COUNT(*) AS n FROM schema_version').get() as { n: number };
-    expect(row.n).toBe(8);
+    expect(row.n).toBe(9);
   });
 
   it('crée, relit et met à jour un enregistrement avec champs optionnels absents', async () => {

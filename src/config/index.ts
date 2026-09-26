@@ -63,6 +63,10 @@ const defaultConfig: AppConfig = {
     // Extensions à ne pas archiver (ex. sidecars « json », « xmp », « aae ») : vide par défaut, à décider sur inventaire réel.
     ignoredExtensions: [],
   },
+  takeout: {
+    // Décision de Marceau du 2026-09-16 ; « 2019 à imprimer » est classé par date. Surchargeable dans config/config.json.
+    keptAlbums: ['Baptême Raphaëlle', 'tenerife 2026'],
+  },
 };
 
 /**
@@ -107,6 +111,10 @@ export async function loadConfig(): Promise<AppConfig> {
     repair: {
       ...defaultConfig.repair,
       ...fileConfig.repair,
+    },
+    takeout: {
+      ...defaultConfig.takeout,
+      ...fileConfig.takeout,
     },
   };
 

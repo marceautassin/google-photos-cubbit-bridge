@@ -73,6 +73,21 @@ export interface ObjectRangeReader {
   readRange(key: string, start: number, end: number): Promise<Uint8Array>;
 }
 
+/** Contenu entier d'un objet, en flux, avec les métadonnées de la réponse. */
+export interface DownloadedObject {
+  body: AsyncIterable<Uint8Array>;
+  size: number | null; // Content-Length
+  etag: string | null; // sans guillemets
+}
+
+/**
+ * Accès en lecture seule au contenu entier d'un objet (téléchargement des zips Takeout, story 4.2) : lire, et rien d'autre.
+ */
+export interface ObjectDownloader {
+  readonly bucket: string;
+  download(key: string): Promise<DownloadedObject>;
+}
+
 /**
  * Métadonnées d'un objet du bucket dédié, lues par HEAD (story 3.1).
  */

@@ -77,16 +77,20 @@ export function parseExifDateValue(value: unknown): LocalDateTime | null {
   return buildLocalDateTime(year, month, day, hour, minute, second);
 }
 
-/**
- * Extrait la date EXIF d'un début de fichier : `DateTimeOriginal`, puis `CreateDate`, puis `ModifyDate`.
- * Un contenu illisible ou tronqué rend `null` (ce n'est pas une erreur de lecture).
- */
-export async function parseExifDate(data: Uint8Array): Promise<ExifDate | null> {
+/** Champs EXIF d'un début de fichier utiles à la datation (story 4.2 : `DateTimeOriginal` et son décalage horaire). */
+export interface ExifDetails {
+  best: ExifDate | null; // `DateTimeOriginal`, puis `CreateDate`, puis `ModifyDate`
+  dateTimeOriginal: LocalDateTime | null;
+  offsetTimeOriginal: string | null; // décalage `±HH:MM` de `DateTimeOriginal`, s'il est écrit
+}
+
+/** Lit les champs de date EXIF d'un début de fichier ; un contenu illisible ou tronqué rend des champs nuls. */
+export async function parseExifDetails(data: Uint8Array): Promise<ExifDetails> {
   let tags: Record<string, unknown> | undefined;
   try {
     // reviveValues: false → chaînes brutes, aucune conversion en Date dépendante du fuseau de la machine.
     tags = await exifr.parse(data, {
-      pick: [...EXIF_TAGS],
+      pick: [...EXIF_TAGS, 'OffsetTimeOriginal'],
       reviveValues: false,
       xmp: false,
       icc: false,
@@ -95,13 +99,30 @@ export async function parseExifDate(data: Uint8Array): Promise<ExifDate | null> 
       ihdr: false,
     });
   } catch {
-    return null;
+    tags = undefined;
   }
+  let best: ExifDate | null = null;
   for (const tag of EXIF_TAGS) {
     const takenAt = parseExifDateValue(tags?.[tag]);
-    if (takenAt) return { takenAt, tag };
+    if (takenAt) {
+      best = { takenAt, tag };
+      break;
+    }
   }
-  return null;
+  const offset = tags?.OffsetTimeOriginal;
+  return {
+    best,
+    dateTimeOriginal: parseExifDateValue(tags?.[EXIF_TAGS[0]]),
+    offsetTimeOriginal: typeof offset === 'string' && /^[+-]\d{2}:\d{2}$/.test(offset.trim()) ? offset.trim() : null,
+  };
+}
+
+/**
+ * Extrait la date EXIF d'un début de fichier : `DateTimeOriginal`, puis `CreateDate`, puis `ModifyDate`.
+ * Un contenu illisible ou tronqué rend `null` (ce n'est pas une erreur de lecture).
+ */
+export async function parseExifDate(data: Uint8Array): Promise<ExifDate | null> {
+  return (await parseExifDetails(data)).best;
 }
 
 /**
@@ -243,7 +264,7 @@ export interface SuspectDating {
  * Raison pour laquelle une datation est suspecte, ou `null`. Suspecte : antérieure à 2000, postérieure à maintenant
  * (quel que soit le fuseau), ou issue d'EXIF `ModifyDate` (souvent une date d'édition ou d'export, pas de prise de vue).
  */
-export function suspectReason(row: ObjectDating, now: Date): string | null {
+export function suspectReason(row: Pick<ObjectDating, 'takenAt' | 'detail'> & { source: string }, now: Date): string | null {
   if (row.takenAt === null) return null;
   const latest = new Date(now.getTime() + FUTURE_MARGIN_MS).toISOString().slice(0, 19);
   if (row.takenAt < SUSPECT_BEFORE) return 'antérieure à 2000';

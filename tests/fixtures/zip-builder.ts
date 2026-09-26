@@ -1,13 +1,16 @@
+import * as zlib from 'zlib';
 import { ObjectRangeReader } from '../../src/clients/types';
 
 /**
- * Encodeur zip minimal pour les tests (story 4.1) : entrées stockées (méthode 0), noms UTF-8 (drapeau 11), zip64 forcé
- * à la demande. CRC non calculés (le lecteur de table des matières ne les lit pas). Renvoie aussi les positions utiles
- * pour corrompre le zip de façon ciblée.
+ * Encodeur zip minimal pour les tests (stories 4.1, 4.2) : entrées stockées (méthode 0) ou deflate (méthode 8), CRC-32
+ * réel (ou forcé pour simuler une corruption), noms UTF-8 (drapeau 11), zip64 forcé à la demande. Renvoie aussi les
+ * positions utiles pour corrompre le zip de façon ciblée.
  */
 export interface ZipFileSpec {
   name: string | Uint8Array; // octets bruts pour un nom invalide
   data?: Uint8Array | string;
+  deflate?: boolean;
+  crc32?: number; // CRC annoncé forcé (corruption)
 }
 
 export interface BuiltZip {
@@ -31,14 +34,19 @@ export function buildZip(files: ZipFileSpec[], options: { zip64?: boolean; comme
 
   for (const file of files) {
     const name = typeof file.name === 'string' ? encoder.encode(file.name) : file.name;
-    const data = typeof file.data === 'string' ? encoder.encode(file.data) : (file.data ?? new Uint8Array(0));
+    const content = typeof file.data === 'string' ? encoder.encode(file.data) : (file.data ?? new Uint8Array(0));
+    const data = file.deflate ? new Uint8Array(zlib.deflateRawSync(content)) : content;
+    const method = file.deflate ? 8 : 0;
+    const crc = file.crc32 ?? zlib.crc32(content);
     const localOffset = offset;
     const local = new DataView(new ArrayBuffer(30));
     local.setUint32(0, 0x04034b50, true);
     local.setUint16(4, 20, true);
     local.setUint16(6, 0x0800, true);
+    local.setUint16(8, method, true);
+    local.setUint32(14, crc, true);
     local.setUint32(18, data.length, true);
-    local.setUint32(22, data.length, true);
+    local.setUint32(22, content.length, true);
     local.setUint16(26, name.length, true);
     push(new Uint8Array(local.buffer));
     push(name);
@@ -48,7 +56,7 @@ export function buildZip(files: ZipFileSpec[], options: { zip64?: boolean; comme
     if (extra) {
       extra.setUint16(0, 0x0001, true);
       extra.setUint16(2, 24, true);
-      extra.setBigUint64(4, BigInt(data.length), true);
+      extra.setBigUint64(4, BigInt(content.length), true);
       extra.setBigUint64(12, BigInt(data.length), true);
       extra.setBigUint64(20, BigInt(localOffset), true);
     }
@@ -57,8 +65,10 @@ export function buildZip(files: ZipFileSpec[], options: { zip64?: boolean; comme
     entry.setUint16(4, 45, true);
     entry.setUint16(6, 45, true);
     entry.setUint16(8, 0x0800, true);
+    entry.setUint16(10, method, true);
+    entry.setUint32(16, crc, true);
     entry.setUint32(20, extra ? 0xffffffff : data.length, true);
-    entry.setUint32(24, extra ? 0xffffffff : data.length, true);
+    entry.setUint32(24, extra ? 0xffffffff : content.length, true);
     entry.setUint16(28, name.length, true);
     entry.setUint16(30, extra ? 28 : 0, true);
     entry.setUint32(42, extra ? 0xffffffff : localOffset, true);

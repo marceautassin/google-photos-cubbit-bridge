@@ -295,6 +295,55 @@ export const MIGRATIONS: readonly { version: number; name: string; sql: string }
         UPDATE repair_execution_lock SET last_activity_at = acquired_at;
       `,
     },
+    {
+      version: 9,
+      name: 'create_takeout_analysis',
+      sql: `
+        -- Analyse d'un export Takeout (story 4.2) : une analyse par export, remplacée d'un bloc à chaque passe.
+        -- zips : JSON [{ nom, taille, etag, verification }] ; l'analyse ne vaut que pour ces zips exacts, cet inventaire du
+        -- bucket dédié et ces albums conservés (story 4.3). kept_albums : JSON, noms normalisés triés.
+        CREATE TABLE IF NOT EXISTS takeout_analyses (
+          export_id TEXT PRIMARY KEY,
+          zips TEXT NOT NULL,
+          time_zone TEXT NOT NULL,
+          destination_bucket TEXT NOT NULL,
+          inventory_completed_at TEXT,
+          kept_albums TEXT NOT NULL,
+          analyzed_at TEXT NOT NULL
+        );
+
+        -- Un média de l'export : identité par le contenu (md5 + taille), date tracée, doublon interne, statut d'archivage.
+        CREATE TABLE IF NOT EXISTS takeout_media (
+          export_id TEXT NOT NULL REFERENCES takeout_analyses(export_id) ON DELETE CASCADE,
+          part TEXT NOT NULL,
+          path TEXT NOT NULL,
+          folder TEXT NOT NULL,
+          folder_kind TEXT NOT NULL CHECK (folder_kind IN ('annee', 'album')),
+          file_name TEXT NOT NULL,
+          size INTEGER NOT NULL,
+          md5 TEXT NOT NULL CHECK (length(md5) = 32),
+          taken_at TEXT,
+          date_source TEXT NOT NULL CHECK (date_source IN ('json_takeout', 'quicktime', 'compagnon_live_photo', 'nom_fichier', 'exif', 'indeterminee')),
+          date_detail TEXT,
+          instant INTEGER,
+          date_warning TEXT,
+          metadata_part TEXT,
+          metadata_path TEXT,
+          companion TEXT,
+          duplicate_of_part TEXT,
+          duplicate_of_path TEXT,
+          archive_status TEXT NOT NULL CHECK (archive_status IN ('deja_archive', 'non_confirmable', 'homonyme_different', 'nouveau')),
+          archive_proof TEXT CHECK (archive_proof IN ('md5', 'etag_multipart')),
+          archived_key TEXT,
+          archive_candidates TEXT NOT NULL, -- JSON : liste de clés
+          same_name_and_size INTEGER NOT NULL CHECK (same_name_and_size IN (0, 1)),
+          PRIMARY KEY (export_id, part, path),
+          CHECK ((date_source = 'indeterminee') = (taken_at IS NULL)),
+          CHECK ((archive_status = 'deja_archive') = (archived_key IS NOT NULL)),
+          CHECK ((archive_status = 'deja_archive') = (archive_proof IS NOT NULL))
+        );
+      `,
+    },
 ];
 
 /**

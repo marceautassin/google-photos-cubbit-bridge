@@ -1,7 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { getDatabase } from './connection';
 import { SyncRecord, SyncSession, SyncStatus } from '../clients/types';
-import { getLogger } from '../utils/logger';
 
 /**
  * Modèle pour les enregistrements de synchronisation

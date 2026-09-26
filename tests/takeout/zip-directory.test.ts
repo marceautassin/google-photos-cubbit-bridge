@@ -1,3 +1,4 @@
+import * as zlib from 'zlib';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -19,7 +20,12 @@ describe('readZipDirectory', () => {
     const counter = countingSource(memorySource(zip.bytes));
     const directory = await readZipDirectory(counter.source);
     expect(directory.zip64).toBe(false);
-    expect(directory.entries).toEqual(FILES.map((f) => ({ name: f.name, size: f.data.length, compressedSize: f.data.length, method: 0 })));
+    expect(directory.entries).toEqual(
+      FILES.map((f, i) => ({
+        name: f.name, size: f.data.length, compressedSize: f.data.length, method: 0,
+        crc32: zlib.crc32(f.data), localOffset: FILES.slice(0, i).reduce((sum, g) => sum + 30 + Buffer.byteLength(g.name) + g.data.length, 0),
+      })),
+    );
     expect(counter.bytesRead()).toBe(zip.bytes.length); // petit zip : la queue couvre tout
   });
 

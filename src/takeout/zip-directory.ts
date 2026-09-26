@@ -20,6 +20,8 @@ export interface ZipEntry {
   size: number; // taille décompressée
   compressedSize: number;
   method: number; // 0 : stockée, 8 : deflate
+  crc32: number; // CRC-32 du contenu décompressé, annoncé par le répertoire central
+  localOffset: number; // position de l'en-tête local de l'entrée
 }
 
 export interface ZipDirectory {
@@ -158,6 +160,7 @@ function parseEntries(directory: Uint8Array, entryCount: number, dataLimit: numb
       throw new ZipStructureError(`répertoire central incohérent : signature invalide à l'entrée ${index} sur ${entryCount}`);
     }
     const flags = data.getUint16(p + 8, true);
+    const crc32 = data.getUint32(p + 16, true);
     const method = data.getUint16(p + 10, true);
     let compressedSize = data.getUint32(p + 20, true);
     let size = data.getUint32(p + 24, true);
@@ -205,7 +208,7 @@ function parseEntries(directory: Uint8Array, entryCount: number, dataLimit: numb
     if (localOffset + LOCAL_HEADER_LENGTH + nameLength + compressedSize > dataLimit) {
       throw new ZipStructureError(`${name} : données hors des bornes (au-delà du début du répertoire central)`);
     }
-    entries.push({ name, size, compressedSize, method });
+    entries.push({ name, size, compressedSize, method, crc32, localOffset });
     extents.push({ name, start: localOffset, minimalEnd: localOffset + LOCAL_HEADER_LENGTH + nameLength + compressedSize });
     p = end;
   }
