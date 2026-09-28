@@ -97,8 +97,20 @@ export interface DestinationObject {
 }
 
 /**
- * Seul accès en écriture au stockage (NFR-1, story 3.1) : copie côté serveur du bucket source vers le bucket dédié, et
- * lecture des métadonnées de destination. Aucune suppression, aucun dépôt d'octets.
+ * Dépôt en plusieurs parties commencé et jamais terminé ni interrompu proprement (story 4.3, correction) : ses
+ * parties sont facturées côté Cubbit mais invisibles de l'outil (aucun objet servi avant que le dépôt entier ne soit
+ * validé). Lecture seule, jamais nettoyé par ce module (NFC-1) : à purger côté Cubbit par une règle de cycle de vie
+ * dédiée aux dépôts multipart inachevés.
+ */
+export interface IncompleteMultipartUpload {
+  key: string;
+  uploadId: string;
+  initiated: Date | null;
+}
+
+/**
+ * Seul accès en écriture au stockage (NFR-1, stories 3.1 et 4.3) : copie côté serveur du bucket source vers le bucket
+ * dédié, dépôt d'un fichier local dans le bucket dédié, et lecture des métadonnées de destination. Aucune suppression.
  */
 export interface ArchiveWriter {
   readonly sourceBucket: string;
@@ -110,4 +122,15 @@ export interface ArchiveWriter {
   headDestination(key: string): Promise<DestinationObject | null>;
   /** Copie côté serveur, conditionnée à l'ETag source (la source n'a pas changé depuis l'inventaire). */
   copyFromSource(sourceKey: string, sourceEtag: string, destinationKey: string): Promise<void>;
+  /**
+   * Dépose `body` (contenu entier, déjà lu localement — story 4.3) à `destinationKey` : une seule requête sous un seuil
+   * documenté, plusieurs parties au-delà. Ne vérifie ni n'empêche un écrasement : l'appelant doit avoir constaté
+   * l'absence de la destination par `headDestination` avant d'appeler cette méthode.
+   */
+  uploadFile(destinationKey: string, body: Buffer): Promise<void>;
+  /**
+   * Dépôts multipart inachevés sur le bucket dédié (story 4.3, correction), lecture seule (`ListMultipartUploads`) :
+   * signalés à l'appelant pour information (résumé d'`archiver`), jamais abandonnés ici (aucune suppression, NFC-1).
+   */
+  listIncompleteMultipartUploads(): Promise<IncompleteMultipartUpload[]>;
 }

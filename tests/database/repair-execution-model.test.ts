@@ -102,6 +102,24 @@ describe('RepairExecutionModel (journal d\'exécution, migrations 7 et 8)', () =
     expect(entry()).toMatchObject({ state: 'echec', copyAttempted: false, message: 'source modifiée' });
   });
 
+  it(
+    'régression (story 4.3) : un `source_key` contenant un octet NUL (`\\u0000`) est tronqué par la couche SQLite — ' +
+      '`locationKey` (archive-plan.ts) doit donc utiliser un séparateur différent',
+    () => {
+      const journal = new RepairExecutionModel();
+      const withNul = { sourceKey: `partie.zip\u0000chemin/dans/le/zip.jpg`, destination: 'photos/2020/2020-05/a.jpg' };
+      journal.prepare('plan-nul', [withNul]);
+      // Constat : la clé relue est tronquée au premier octet NUL (chaîne C côté binding SQLite), pas d'exception levée.
+      expect([...journal.findStates('plan-nul').keys()]).toEqual(['partie.zip']);
+      expect(journal.findStates('plan-nul').get('partie.zip')).toBeDefined();
+
+      const withSafeSeparator = { sourceKey: `partie.zip␟chemin/dans/le/zip.jpg`, destination: 'photos/2020/2020-05/b.jpg' };
+      journal.prepare('plan-nul', [withSafeSeparator]);
+      // Le séparateur U+241F (utilisé par `locationKey`) survit intact à la persistance.
+      expect(journal.findStates('plan-nul').has(withSafeSeparator.sourceKey)).toBe(true);
+    },
+  );
+
   describe('verrou d\'exécution exclusif', () => {
     const me = { pid: 1000, host: 'poste' };
     const other = { pid: 2000, host: 'poste' };
@@ -239,7 +257,8 @@ describe('RepairExecutionModel (journal d\'exécution, migrations 7 et 8)', () =
       const old = new DatabaseSync(file);
       old.exec('CREATE TABLE schema_version (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT DEFAULT CURRENT_TIMESTAMP)');
       for (const m of MIGRATIONS.filter((m) => m.version <= 7)) {
-        old.exec(m.sql);
+        if ('sql' in m) old.exec(m.sql);
+        else m.run(old);
         old.prepare('INSERT INTO schema_version (version, name) VALUES (?, ?)').run(m.version, m.name);
       }
       const insert = old.prepare('INSERT INTO repair_execution_lines (plan_id, source_key, destination, state, message, updated_at) VALUES (?, ?, ?, ?, ?, ?)');

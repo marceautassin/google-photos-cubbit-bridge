@@ -33,6 +33,8 @@ import { partSizeLabel } from '../utils/multipart-etag';
 import { registerDisabledCommand } from './disabled-command';
 import { requireValidConfig } from './inventory';
 import { runCommand } from './run-command';
+import { register as registerArchiver } from './takeout-archive';
+import { register as registerPlanifier } from './takeout-plan';
 
 /**
  * `gpb takeout valider` (story 4.1) : valide les exports Takeout avant traitement en lisant la seule table des matières
@@ -107,6 +109,9 @@ export function register(program: Command, config: AppConfig, sources: TakeoutSo
     .option('--sortie <fichiers...>', 'Exporter l\'analyse détaillée par média (.csv et/ou .json)')
     .action((options: AnalyserOptions) => runCommand('Analyse Takeout :', () => analyserCommand(config, sources, options)));
 
+  registerPlanifier(takeoutCmd, config, sources);
+  registerArchiver(takeoutCmd, config, sources);
+
   for (const [name, description] of [
     ['import', 'Importer un export Takeout extrait (ancien format)'],
     ['list', 'Lister un export Takeout extrait (ancien format)'],
@@ -132,7 +137,7 @@ export async function listBackupZips(lister: BucketLister, reader: ObjectRangeRe
     }));
 }
 
-function defaultSources(config: AppConfig): TakeoutSources {
+export function defaultSources(config: AppConfig): TakeoutSources {
   return {
     async remoteZips(): Promise<{ origin: string; zips: ZipRef[] }> {
       const bucket = config.repair.destinationBucket;
@@ -154,7 +159,7 @@ function defaultSources(config: AppConfig): TakeoutSources {
 }
 
 /** Entier positif de `--parties`. */
-function parsePartCount(value: string | undefined): number | undefined {
+export function parsePartCount(value: string | undefined): number | undefined {
   if (value === undefined) return undefined;
   const count = Number(value);
   if (!Number.isInteger(count) || count < 1) throw new Error(`--parties attend un entier positif (reçu « ${value} »)`);
@@ -162,7 +167,7 @@ function parsePartCount(value: string | undefined): number | undefined {
 }
 
 /** Exports désignés par `--export` (horodatage seul ou identifiant complet), tous si absent ; refus si aucun. */
-function selectGroups(zips: ZipRef[], exportId: string | undefined): ExportGroup[] {
+export function selectGroups(zips: ZipRef[], exportId: string | undefined): ExportGroup[] {
   const all = groupExports(zips);
   const groups = all.filter((g) => !exportId || g.id === exportId || g.id.startsWith(`${exportId}-`));
   if (groups.length === 0) {
@@ -255,7 +260,7 @@ function display(report: ExportReport): void {
 // --- gpb takeout analyser (story 4.2) ----------------------------------------------------------------------------------
 
 /** Affiche une progression par paliers de 10 %, sans inonder la console. */
-function progressPrinter(): (label: string, done: number, total: number) => void {
+export function progressPrinter(): (label: string, done: number, total: number) => void {
   const printed = new Map<string, number>();
   return (label, done, total) => {
     const step = total > 0 ? Math.floor((10 * done) / total) : 10;
@@ -265,8 +270,8 @@ function progressPrinter(): (label: string, done: number, total: number) => void
   };
 }
 
-const PHASE_LABELS: Record<ZipProgress['phase'], string> = { telechargement: 'téléchargement', verification: 'vérification' };
-const ORIGIN_LABELS: Record<LocalZip['origin'], string> = {
+export const PHASE_LABELS: Record<ZipProgress['phase'], string> = { telechargement: 'téléchargement', verification: 'vérification' };
+export const ORIGIN_LABELS: Record<LocalZip['origin'], string> = {
   reutilise: 'déjà présent et vérifié, réutilisé',
   reverifie: 'déjà présent, revérifié sans téléchargement',
   telecharge: 'téléchargé',

@@ -211,11 +211,13 @@ describe('analyse d\'un export Takeout local', () => {
     const media = await analyze();
     const status = (name: string, folder = Y): AnalyzedMedia['archive'] => byName(media, folder, name).archive;
     expect(status('IMG_0001.JPG')).toEqual({
-      status: 'deja_archive', proof: 'md5', key: 'photos/2020/2020-01/IMG_0001.JPG', candidates: ['photos/2020/2020-01/IMG_0001.JPG'], sameNameAndSize: true,
+      status: 'deja_archive', proof: 'md5', key: 'photos/2020/2020-01/IMG_0001.JPG', archivedEtag: md5(TENERIFE),
+      candidates: ['photos/2020/2020-01/IMG_0001.JPG'], sameNameAndSize: true,
     });
     expect(status('dup.jpg', A)).toMatchObject({ status: 'deja_archive', proof: 'md5', key: 'albums/Baptême Raphaëlle/dup_12345678.jpg', sameNameAndSize: false });
     expect(status('VID_multi.mp4')).toEqual({
-      status: 'deja_archive', proof: 'etag_multipart', key: 'photos/2020/2020-02/VID_multi.mp4', candidates: ['photos/2020/2020-02/VID_multi.mp4'], sameNameAndSize: true,
+      status: 'deja_archive', proof: 'etag_multipart', key: 'photos/2020/2020-02/VID_multi.mp4', archivedEtag: onePartEtag(MULTI),
+      candidates: ['photos/2020/2020-02/VID_multi.mp4'], sameNameAndSize: true,
     });
     expect(status('VID_autre.mp4')).toMatchObject({ status: 'non_confirmable', proof: null, candidates: ['photos/2020/2020-02/VID_autre.mp4'] });
     expect(status('IMG_0043.MP4')).toMatchObject({ status: 'non_confirmable', candidates: ['photos/2020/2020-02/IMG_0043.MP4'], sameNameAndSize: true });
@@ -283,7 +285,7 @@ describe('règle « déjà archivé »', () => {
   const media = (fileName: string, content: string): AnalyzedMedia => ({
     part: 'p.zip', path: `x/${fileName}`, folder: 'Photos de 2020', folderKind: 'annee', fileName, size: content.length, md5: md5(content),
     takenAt: null, dateSource: 'indeterminee', dateDetail: null, instant: null, dateWarning: null, metadata: null, companion: null, duplicateOf: null,
-    archive: { status: 'nouveau', proof: null, key: null, candidates: [], sameNameAndSize: false },
+    archive: { status: 'nouveau', proof: null, key: null, archivedEtag: null, candidates: [], sameNameAndSize: false },
   });
 
   it('un homonyme de même taille à ETag multipart n\'est jamais présumé identique sans recalcul, même si un autre homonyme diffère', () => {
@@ -300,7 +302,10 @@ describe('règle « déjà archivé »', () => {
   it('confirmation par ETag multipart recalculé : fournie par la lecture, clé préférée au même nom', () => {
     const items = [media('v.mp4', 'abcd')];
     matchArchive(items, [object('photos/2020/2020-01/v.mp4', 4, `${'1'.repeat(32)}-2`)], new Map([['p.zip\u0000x/v.mp4', ['photos/2020/2020-01/v.mp4']]]));
-    expect(items[0]!.archive).toEqual({ status: 'deja_archive', proof: 'etag_multipart', key: 'photos/2020/2020-01/v.mp4', candidates: ['photos/2020/2020-01/v.mp4'], sameNameAndSize: true });
+    expect(items[0]!.archive).toEqual({
+      status: 'deja_archive', proof: 'etag_multipart', key: 'photos/2020/2020-01/v.mp4', archivedEtag: `${'1'.repeat(32)}-2`,
+      candidates: ['photos/2020/2020-01/v.mp4'], sameNameAndSize: true,
+    });
   });
 
   it('même nom et même taille mais ETag MD5 différent : contenu différent ; MD5 égal mais taille différente : non confirmé', () => {

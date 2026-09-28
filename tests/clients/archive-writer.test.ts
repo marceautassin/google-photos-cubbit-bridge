@@ -1,6 +1,15 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { CopyObjectCommand, HeadBucketCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
+import {
+  CompleteMultipartUploadCommand,
+  CopyObjectCommand,
+  CreateMultipartUploadCommand,
+  HeadBucketCommand,
+  HeadObjectCommand,
+  ListMultipartUploadsCommand,
+  PutObjectCommand,
+  UploadPartCommand,
+} from '@aws-sdk/client-s3';
 import {
   ACCESS_PROBE_KEY,
   destinationProblem,
@@ -60,6 +69,7 @@ describe('S3ArchiveWriter : garde de cloisonnement (NFR-1)', () => {
     const writer = new S3ArchiveWriter(s3.asClient(), scope);
     await expect(writer.copyFromSource(SOURCE_KEY, md5, key)).rejects.toThrow(message);
     await expect(writer.headDestination(key)).rejects.toThrow(WriteRefusedError);
+    await expect(writer.uploadFile(key, Buffer.from('x'))).rejects.toThrow(message);
     expect(s3.send).not.toHaveBeenCalled();
   });
 
@@ -135,6 +145,84 @@ describe('S3ArchiveWriter : requêtes', () => {
     const missing = new FakeS3();
     await expect(new S3ArchiveWriter(missing.asClient(), scope).checkAccess()).rejects.toThrow('NotFound');
     expect(missing.commandNames()).toEqual(['HeadBucketCommand']);
+  });
+});
+
+describe('S3ArchiveWriter : uploadFile (story 4.3)', () => {
+  it('dépose un petit fichier en une seule requête PutObject', async () => {
+    const s3 = new FakeS3();
+    const body = Buffer.from('contenu du média');
+    await new S3ArchiveWriter(s3.asClient(), scope).uploadFile('photos/2020/2020-05/a.jpg', body);
+    expect(s3.commandNames()).toEqual(['PutObjectCommand']);
+    const put = s3.commands[0] as PutObjectCommand;
+    expect(put.input).toEqual({ Bucket: 'marceau-photos', Key: 'photos/2020/2020-05/a.jpg', Body: body, ContentLength: body.length });
+    expect(s3.get('marceau-photos', 'photos/2020/2020-05/a.jpg')?.size).toBe(body.length);
+  });
+
+  it('bascule en dépôt multipart au-delà du seuil, en parties de la taille configurée, dans l\'ordre', async () => {
+    const s3 = new FakeS3();
+    // Seuil et taille de partie réduits pour le test (constructeur, story 4.3) : pas de tampon de test énorme.
+    const writer = new S3ArchiveWriter(s3.asClient(), scope, undefined, 10, 4);
+    const body = Buffer.from('0123456789ABCDE'); // 15 octets > seuil (10) : 4 parties de 4, 4, 4, 3
+    await writer.uploadFile('albums/mariage/video.mp4', body);
+    expect(s3.commandNames()).toEqual([
+      'CreateMultipartUploadCommand',
+      'UploadPartCommand',
+      'UploadPartCommand',
+      'UploadPartCommand',
+      'UploadPartCommand',
+      'CompleteMultipartUploadCommand',
+    ]);
+    const parts = s3.commands.slice(1, 5) as UploadPartCommand[];
+    expect(parts.map((p) => (p.input.Body as Buffer).toString())).toEqual(['0123', '4567', '89AB', 'CDE']);
+    expect(parts.map((p) => p.input.PartNumber)).toEqual([1, 2, 3, 4]);
+    const create = s3.commands[0] as CreateMultipartUploadCommand;
+    expect(create.input).toEqual({ Bucket: 'marceau-photos', Key: 'albums/mariage/video.mp4' });
+    const complete = s3.commands[5] as CompleteMultipartUploadCommand;
+    expect(complete.input.MultipartUpload?.Parts).toHaveLength(4);
+    expect(s3.get('marceau-photos', 'albums/mariage/video.mp4')?.size).toBe(body.length);
+  });
+
+  it('un fichier exactement à la taille du seuil reste en une seule requête (borne incluse)', async () => {
+    const s3 = new FakeS3();
+    const writer = new S3ArchiveWriter(s3.asClient(), scope, undefined, 5, 2);
+    await writer.uploadFile('photos/2020/2020-05/a.jpg', Buffer.from('12345'));
+    expect(s3.commandNames()).toEqual(['PutObjectCommand']);
+  });
+});
+
+describe('S3ArchiveWriter : listIncompleteMultipartUploads (story 4.3, correction)', () => {
+  it('aucun dépôt multipart en cours → liste vide', async () => {
+    const s3 = new FakeS3();
+    const writer = new S3ArchiveWriter(s3.asClient(), scope);
+    await expect(writer.listIncompleteMultipartUploads()).resolves.toEqual([]);
+  });
+
+  it('signale un dépôt multipart commencé mais jamais terminé (ni abandonné, jamais par ce module)', async () => {
+    const s3 = new FakeS3();
+    const writer = new S3ArchiveWriter(s3.asClient(), scope, undefined, 10, 4);
+    // Panne réseau simulée sur la première partie : le dépôt multipart reste ouvert, jamais complété.
+    s3.uploadPartError = () => new Error('panne réseau simulée');
+    await expect(writer.uploadFile('photos/2020/2020-05/video.mp4', Buffer.from('0123456789ABCDE'))).rejects.toThrow('panne réseau simulée');
+    expect(s3.commandNames().includes('AbortMultipartUploadCommand')).toBe(false); // NFC-1 : aucune suppression, jamais par ce module
+    const incomplete = await writer.listIncompleteMultipartUploads();
+    expect(incomplete).toEqual([{ key: 'photos/2020/2020-05/video.mp4', uploadId: 'upload-1', initiated: expect.any(Date) }]);
+  });
+
+  it('un dépôt multipart terminé (CompleteMultipartUpload réussi) n\'apparaît plus dans la liste', async () => {
+    const s3 = new FakeS3();
+    const writer = new S3ArchiveWriter(s3.asClient(), scope, undefined, 10, 4);
+    await writer.uploadFile('photos/2020/2020-05/video.mp4', Buffer.from('0123456789ABCDE'));
+    await expect(writer.listIncompleteMultipartUploads()).resolves.toEqual([]);
+  });
+
+  it('ne lit qu\'un seul bucket, jamais de commande hors lecture', async () => {
+    const s3 = new FakeS3();
+    const writer = new S3ArchiveWriter(s3.asClient(), scope);
+    await writer.listIncompleteMultipartUploads();
+    expect(s3.commandNames()).toEqual(['ListMultipartUploadsCommand']);
+    const list = s3.commands[0] as ListMultipartUploadsCommand;
+    expect(list.input.Bucket).toBe('marceau-photos');
   });
 });
 
@@ -223,9 +311,28 @@ interface Source {
 
 const WRITER_FILE = 'clients/archive-writer.ts';
 
-/** Seuls modules du SDK autorisés, et identifiants importés par fichier (inventaire figé). */
+/**
+ * Seuls modules du SDK autorisés, et identifiants importés par fichier (inventaire figé).
+ * Story 4.3 : le point d'accès gagne la capacité de dépôt d'un fichier local (`PutObjectCommand` en une requête,
+ * `CreateMultipartUploadCommand`/`UploadPartCommand`/`CompleteMultipartUploadCommand` au-delà d'un seuil documenté),
+ * et la lecture seule des dépôts multipart inachevés (`ListMultipartUploadsCommand`, correction de revue : ces
+ * parties sont facturées et invisibles autrement, signalées à `archiver` pour purge côté Cubbit).
+ * Volontairement absente : `AbortMultipartUploadCommand` — ce serait la seule commande de suppression du point d'accès,
+ * contraire à sa garantie « aucune suppression » ; une partie orpheline d'un dépôt multipart inachevé n'est jamais
+ * servie (elle n'existe qu'après `CompleteMultipartUpload`) et n'écrase donc jamais rien.
+ */
 const ALLOWED_IMPORTS: Record<string, string[]> = {
-  [WRITER_FILE]: ['CopyObjectCommand', 'HeadBucketCommand', 'HeadObjectCommand', 'S3Client'],
+  [WRITER_FILE]: [
+    'CompleteMultipartUploadCommand',
+    'CopyObjectCommand',
+    'CreateMultipartUploadCommand',
+    'HeadBucketCommand',
+    'HeadObjectCommand',
+    'ListMultipartUploadsCommand',
+    'PutObjectCommand',
+    'S3Client',
+    'UploadPartCommand',
+  ],
   'clients/bucket-lister.ts': ['ListObjectsV2Command', 'S3Client'],
   // Story 4.2 : téléchargement entier des zips Takeout de backups/, en lecture seule (GET complet, rien d'autre).
   'clients/object-downloader.ts': ['GetObjectCommand', 'S3Client'],
@@ -233,7 +340,16 @@ const ALLOWED_IMPORTS: Record<string, string[]> = {
   'clients/s3-client.ts': ['S3Client'],
 };
 const ALLOWED_MODULE = '@aws-sdk/client-s3';
-const WRITER_COMMANDS = new Set(['CopyObjectCommand', 'HeadBucketCommand', 'HeadObjectCommand']);
+const WRITER_COMMANDS = new Set([
+  'CompleteMultipartUploadCommand',
+  'CopyObjectCommand',
+  'CreateMultipartUploadCommand',
+  'HeadBucketCommand',
+  'HeadObjectCommand',
+  'ListMultipartUploadsCommand',
+  'PutObjectCommand',
+  'UploadPartCommand',
+]);
 const READ_COMMANDS = new Set(['ListObjectsV2Command', 'GetObjectCommand', 'HeadObjectCommand', 'HeadBucketCommand']);
 
 /** Toute référence à un module du SDK, quels que soient les guillemets. */
@@ -275,8 +391,11 @@ function analyzeSources(sources: Source[]): string[] {
     const commands = unique(text.match(COMMAND_NAME) ?? []);
     if (file === WRITER_FILE) {
       const extra = commands.filter((c) => !WRITER_COMMANDS.has(c));
-      if (extra.length > 0) violations.push(`${file} : commandes hors copie et HEAD : ${extra.join(', ')}`);
-      if (/Delete|Put[A-Z]|Upload|GetObject|lib-storage/.test(text)) violations.push(`${file} : mention de suppression, dépôt ou lecture d'objet`);
+      if (extra.length > 0) violations.push(`${file} : commandes hors copie, dépôt et HEAD : ${extra.join(', ')}`);
+      // Story 4.3 : PutObject/CreateMultipartUpload/UploadPart/CompleteMultipartUpload sont désormais légitimes ici
+      // (couverts et bornés par WRITER_COMMANDS ci-dessus) ; seuls la suppression, la lecture d'objet et
+      // `AbortMultipartUpload` (qui serait la seule suppression du point d'accès) restent interdits.
+      if (/Delete|AbortMultipart|GetObject|lib-storage/.test(text)) violations.push(`${file} : mention de suppression ou de lecture d'objet`);
     } else {
       const writes = unique(text.match(WRITE_NAME) ?? []).filter((name) => !NOT_WRITE_NAMES[file]?.has(name));
       if (writes.length > 0) violations.push(`${file} : nom d'écriture hors du point d'accès : ${writes.join(', ')}`);
@@ -338,7 +457,7 @@ describe('analyse statique des sources : aucune suppression, une seule écriture
 
   it('détecte une commande en trop dans le point d\'accès lui-même', () => {
     const writer = sources.find((s) => s.file === WRITER_FILE)!;
-    const tampered = writer.text.replace('HeadBucketCommand, HeadObjectCommand', 'HeadBucketCommand, HeadObjectCommand, GetObjectCommand');
+    const tampered = writer.text.replace('HeadObjectCommand,', 'HeadObjectCommand,\n  GetObjectCommand,');
     expect(tampered).not.toBe(writer.text);
     expect(analyzeSources([{ file: WRITER_FILE, text: tampered }])).not.toEqual([]);
   });

@@ -90,6 +90,15 @@ export async function readZipEntry(
 /** Contenu entier d'une petite entrée (métadonnées JSON), vérifié ; refus au-delà de `maxSize` octets. */
 export async function readSmallZipEntry(filePath: string, entry: ZipEntry, maxSize: number): Promise<Buffer> {
   if (entry.size > maxSize) throw new ZipStructureError(`${entry.name} : ${entry.size} octets, au-delà de ${maxSize} octets attendus`);
+  return readWholeZipEntry(filePath, entry);
+}
+
+/**
+ * Contenu entier d'une entrée, quelle que soit sa taille (story 4.3 : lecture d'un média avant envoi, jamais réextrait
+ * sur disque), vérifié (CRC-32 et taille décompressée). Mis en mémoire en une fois : acceptable pour des médias d'un
+ * export Google Photos (quelques centaines de Mio au plus), à revoir si de bien plus gros fichiers apparaissaient.
+ */
+export async function readWholeZipEntry(filePath: string, entry: ZipEntry): Promise<Buffer> {
   const chunks: Buffer[] = [];
   await readZipEntry(filePath, entry, (chunk) => chunks.push(chunk));
   return Buffer.concat(chunks);

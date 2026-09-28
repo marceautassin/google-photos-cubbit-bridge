@@ -37,6 +37,13 @@ export interface ArchiveMatch {
   status: ArchiveStatus;
   proof: ArchiveProof | null; // seulement pour deja_archive
   key: string | null; // objet archivé confirmé (même nom de préférence)
+  /**
+   * ETag (normalisé) de l'objet `key` tel que vu par CETTE analyse, seulement pour `deja_archive` (story 4.3) : `md5`
+   * égal au MD5 du contenu, ou ETag multipart confirmé par recalcul. Sert à revérifier au moment du plan que l'objet
+   * archivé n'a pas changé depuis (même preuve, quelle que soit sa forme), sans jamais comparer un MD5 à un ETag
+   * multipart. `null` sinon.
+   */
+  archivedEtag: string | null;
   candidates: string[]; // clés confirmées, non confirmables, ou homonymes selon le statut
   sameNameAndSize: boolean; // un objet archivé a le même nom comparable et la même taille
 }
@@ -179,7 +186,7 @@ export async function analyzeTakeoutExport(input: AnalysisInput): Promise<Analyz
       takenAt: date.takenAt, dateSource: date.source, dateDetail: date.detail, instant: date.instant, dateWarning: date.warning,
       metadata: media.metadata === null ? null : { part: media.metadata.part, path: media.metadata.path },
       companion: media.companion, duplicateOf: null,
-      archive: { status: 'nouveau', proof: null, key: null, candidates: [], sameNameAndSize: false },
+      archive: { status: 'nouveau', proof: null, key: null, archivedEtag: null, candidates: [], sameNameAndSize: false },
     });
   }
   markInternalDuplicates(analyzed, input.keptAlbums);
@@ -228,6 +235,9 @@ export function markInternalDuplicates(media: AnalyzedMedia[], keptAlbums: strin
  */
 export function matchArchive(media: AnalyzedMedia[], archived: BucketObject[], multipartConfirmed: ReadonlyMap<string, string[]> = new Map()): void {
   const index = new ArchiveIndex(archived);
+  // ETag (normalisé) de chaque objet archivé par sa clé : sert à enregistrer la preuve exacte vue par CETTE analyse
+  // (story 4.3), quelle que soit sa forme (MD5 simple ou multipart), pour la revérifier au moment du plan.
+  const etagByKey = new Map(archived.map((o) => [o.key, normalizeEtag(o.etag)]));
   for (const m of media) {
     const homonyms = index.homonyms(m.fileName);
     const sameNameAndSize = homonyms.some((o) => o.size === m.size);
@@ -235,18 +245,24 @@ export function matchArchive(media: AnalyzedMedia[], archived: BucketObject[], m
     const byMd5 = index.withMd5(m.md5, m.size).map((o) => o.key).sort();
     const byParts = [...(multipartConfirmed.get(locationKey(m)) ?? [])].sort();
     if (byMd5.length > 0) {
-      m.archive = { status: 'deja_archive', proof: 'md5', key: preferred(byMd5), candidates: byMd5, sameNameAndSize };
+      const key = preferred(byMd5);
+      m.archive = { status: 'deja_archive', proof: 'md5', key, archivedEtag: etagByKey.get(key) ?? null, candidates: byMd5, sameNameAndSize };
       continue;
     }
     if (byParts.length > 0) {
-      m.archive = { status: 'deja_archive', proof: 'etag_multipart', key: preferred(byParts), candidates: byParts, sameNameAndSize };
+      const key = preferred(byParts);
+      m.archive = { status: 'deja_archive', proof: 'etag_multipart', key, archivedEtag: etagByKey.get(key) ?? null, candidates: byParts, sameNameAndSize };
       continue;
     }
     const keys = (objects: BucketObject[]): string[] => objects.map((o) => o.key).sort();
     const unconfirmable = homonyms.filter((o) => o.size === m.size && etagKind(o.etag) !== 'md5');
-    if (unconfirmable.length > 0) m.archive = { status: 'non_confirmable', proof: null, key: null, candidates: keys(unconfirmable), sameNameAndSize };
-    else if (homonyms.length > 0) m.archive = { status: 'homonyme_different', proof: null, key: null, candidates: keys(homonyms), sameNameAndSize };
-    else m.archive = { status: 'nouveau', proof: null, key: null, candidates: [], sameNameAndSize };
+    if (unconfirmable.length > 0) {
+      m.archive = { status: 'non_confirmable', proof: null, key: null, archivedEtag: null, candidates: keys(unconfirmable), sameNameAndSize };
+    } else if (homonyms.length > 0) {
+      m.archive = { status: 'homonyme_different', proof: null, key: null, archivedEtag: null, candidates: keys(homonyms), sameNameAndSize };
+    } else {
+      m.archive = { status: 'nouveau', proof: null, key: null, archivedEtag: null, candidates: [], sameNameAndSize };
+    }
   }
 }
 

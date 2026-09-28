@@ -79,10 +79,19 @@ export function inTransaction<T>(database: DatabaseSync, work: () => T): T {
 }
 
 /**
- * Migrations du schéma, appliquées dans l'ordre, chacune une seule fois. Une migration livrée n'est jamais modifiée :
- * toute évolution est une nouvelle migration.
+ * Migrations du schéma, appliquées dans l'ordre, chacune une seule fois. Une migration livrée ou déjà appliquée
+ * quelque part n'est **jamais** modifiée : toute évolution est une nouvelle migration. Incident vécu (story 4.3) :
+ * la migration 10 avait été amendée après avoir déjà été appliquée sur une base de travail (elle n'avait encore été
+ * livrée nulle part, mais l'était pour cette base) ; les migrations déjà enregistrées dans `schema_version` n'étant
+ * jamais rejouées, la colonne ajoutée n'existait pas sur cette base → échec en exécution réelle. Corrigé : la
+ * migration 10 est revenue à sa forme d'origine, la colonne est ajoutée par la migration 12 (`sql` ou `run`, cf.
+ * `MigrationDef`), qui vérifie sa propre applicabilité par `PRAGMA table_info` au lieu de supposer l'état de la table.
  */
-export const MIGRATIONS: readonly { version: number; name: string; sql: string }[] = [
+type MigrationDef =
+  | { version: number; name: string; sql: string }
+  | { version: number; name: string; run: (database: DatabaseSync) => void };
+
+export const MIGRATIONS: readonly MigrationDef[] = [
     {
       version: 1,
       name: 'create_initial_tables',
@@ -344,6 +353,86 @@ export const MIGRATIONS: readonly { version: number; name: string; sql: string }
         );
       `,
     },
+    {
+      version: 10,
+      name: 'create_takeout_archive_plan',
+      sql: `
+        -- Plan d'archivage courant d'un export Takeout (story 4.3) : un seul plan par export, remplacé d'un bloc.
+        -- Périmé si l'analyse source (analyzed_at) ou l'inventaire du bucket dédié utilisé pour les destinations
+        -- occupées (destination_inventory_completed_at) changent, ou si les albums conservés diffèrent.
+        CREATE TABLE IF NOT EXISTS takeout_archive_plans (
+          export_id TEXT PRIMARY KEY,
+          id TEXT NOT NULL, -- empreinte SHA-256 du contenu
+          destination_bucket TEXT NOT NULL,
+          kept_albums TEXT NOT NULL, -- JSON, normalisés triés
+          analysis_analyzed_at TEXT NOT NULL,
+          destination_inventory_completed_at TEXT,
+          naming_anomalies TEXT NOT NULL, -- JSON
+          violations TEXT NOT NULL, -- JSON
+          executable INTEGER NOT NULL,
+          generated_at TEXT NOT NULL
+        );
+
+        -- Dernière génération refusée par export (effacée par la génération réussie suivante de ce même export).
+        CREATE TABLE IF NOT EXISTS takeout_archive_plan_refusals (
+          export_id TEXT PRIMARY KEY,
+          refused_at TEXT NOT NULL,
+          reason TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS takeout_archive_plan_lines (
+          export_id TEXT NOT NULL REFERENCES takeout_archive_plans(export_id) ON DELETE CASCADE,
+          position INTEGER NOT NULL,
+          part TEXT NOT NULL,
+          path TEXT NOT NULL,
+          folder TEXT NOT NULL,
+          file_name TEXT NOT NULL,
+          size INTEGER NOT NULL,
+          md5 TEXT NOT NULL CHECK (length(md5) = 32),
+          date_source TEXT NOT NULL,
+          action TEXT NOT NULL CHECK (action IN ('envoyer', 'ignorer_deja_archive', 'ignorer_doublon_interne', 'reclasser_quarantaine', 'quarantaine')),
+          destination TEXT,
+          kept_of_part TEXT,
+          kept_of_path TEXT,
+          reason TEXT NOT NULL,
+          PRIMARY KEY (export_id, part, path)
+        );
+
+        -- Journal d'exécution de l'envoi (story 4.3) et son verrou : réutilisation directe des tables de la réparation
+        -- (repair_execution_lines, repair_execution_lock), déjà génériques (plan_id, source_key, destination, état),
+        -- indépendantes de la sémantique « copie ». Un seul verrou global impose qu'une seule passe d'écriture
+        -- (réparation OU archivage Takeout) tourne à la fois, cohérent avec le point d'accès en écriture unique.
+      `,
+    },
+    {
+      version: 11,
+      name: 'add_takeout_media_archived_etag',
+      sql: `
+        -- Correction (story 4.3, revue en exécution réelle) : l'invariant « ligne déjà archivée pointant vers un objet
+        -- existant » comparait le MD5 du contenu à l'ETag de l'objet archivé, ce qui rejette à tort les 112 médias
+        -- confirmés uniquement par recalcul d'ETag multipart (archive_proof = 'etag_multipart', jamais par MD5). La
+        -- preuve exacte vue par l'analyse (ETag normalisé de l'objet archivé, quelle que soit sa forme) doit être
+        -- enregistrée pour être revérifiée telle quelle au moment du plan, sans jamais comparer un MD5 à un ETag
+        -- multipart. Migration 9 (déjà appliquée sur la base réelle) non modifiée : ajout d'une colonne, pas de
+        -- reconstruction de table. NULL pour toute analyse enregistrée avant cette migration : relancer
+        -- « gpb takeout analyser » pour la repeupler avant de régénérer un plan sur un export déjà analysé.
+        ALTER TABLE takeout_media ADD COLUMN archived_etag TEXT;
+      `,
+    },
+    {
+      version: 12,
+      name: 'add_takeout_archive_plan_lines_archived_etag',
+      // Ajoute la colonne `archived_etag` à `takeout_archive_plan_lines`, pour la même correction que la migration 11
+      // (côté plan d'archivage, pas côté analyse). Vérifiée par `PRAGMA table_info` plutôt que supposée absente : une
+      // base ayant déjà appliqué une version antérieure (aujourd'hui corrigée) de la migration 10 qui la créait déjà
+      // ne doit pas échouer sur un `ADD COLUMN` en double (SQLite n'a pas `ADD COLUMN IF NOT EXISTS`).
+      run: (database: DatabaseSync): void => {
+        const columns = database.prepare("PRAGMA table_info('takeout_archive_plan_lines')").all() as unknown as { name: string }[];
+        if (!columns.some((c) => c.name === 'archived_etag')) {
+          database.exec('ALTER TABLE takeout_archive_plan_lines ADD COLUMN archived_etag TEXT;');
+        }
+      },
+    },
 ];
 
 /**
@@ -372,7 +461,8 @@ async function runMigrations(database: DatabaseSync): Promise<void> {
       getLogger().info(`Application de la migration ${migration.version}: ${migration.name}`);
       
       inTransaction(database, () => {
-        database.exec(migration.sql);
+        if ('run' in migration) migration.run(database);
+        else database.exec(migration.sql);
         database
           .prepare('INSERT INTO schema_version (version, name) VALUES (?, ?)')
           .run(migration.version, migration.name);

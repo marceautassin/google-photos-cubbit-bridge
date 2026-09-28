@@ -69,6 +69,19 @@ class PartHasher {
   }
 }
 
+/**
+ * ETag multipart réellement produit pour `body` déposé en une passe, en parties de `partSize` octets **connue**
+ * (jamais devinée) — story 4.3, correction : sert à vérifier notre propre dépôt (`archive-execution.ts`), dont la
+ * taille de partie est celle que nous avons choisie (`UPLOAD_PART_SIZE_BYTES` par défaut). À ne pas confondre avec
+ * `MultipartEtagHasher`, qui essaie plusieurs tailles plausibles quand la taille de partie d'un objet tiers (déposé
+ * par un autre outil) est inconnue.
+ */
+export function computeMultipartEtag(body: Uint8Array, partSize: number): string {
+  const hasher = new PartHasher(partSize);
+  hasher.update(body);
+  return hasher.etag();
+}
+
 /** Recalcule un ETag multipart attendu pour chaque taille de partie plausible. */
 export class MultipartEtagHasher {
   private readonly hashers: PartHasher[];

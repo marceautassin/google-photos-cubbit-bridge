@@ -55,6 +55,7 @@ interface MediaRow {
   archive_status: ArchiveStatus;
   archive_proof: ArchiveProof | null;
   archived_key: string | null;
+  archived_etag: string | null; // migration 11 (story 4.3, correction)
   archive_candidates: string;
   same_name_and_size: number;
 }
@@ -89,14 +90,15 @@ export class TakeoutAnalysisModel {
       const insert = this.db.prepare(
         `INSERT INTO takeout_media (export_id, part, path, folder, folder_kind, file_name, size, md5, taken_at, date_source, date_detail,
            instant, date_warning, metadata_part, metadata_path, companion, duplicate_of_part, duplicate_of_path, archive_status,
-           archive_proof, archived_key, archive_candidates, same_name_and_size)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           archive_proof, archived_key, archived_etag, archive_candidates, same_name_and_size)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       for (const m of analysis.media) {
         insert.run(
           analysis.exportId, m.part, m.path, m.folder, m.folderKind, m.fileName, m.size, m.md5, m.takenAt, m.dateSource, m.dateDetail,
           m.instant, m.dateWarning, m.metadata?.part ?? null, m.metadata?.path ?? null, m.companion, m.duplicateOf?.part ?? null,
-          m.duplicateOf?.path ?? null, m.archive.status, m.archive.proof, m.archive.key, JSON.stringify(m.archive.candidates), m.archive.sameNameAndSize ? 1 : 0,
+          m.duplicateOf?.path ?? null, m.archive.status, m.archive.proof, m.archive.key, m.archive.archivedEtag,
+          JSON.stringify(m.archive.candidates), m.archive.sameNameAndSize ? 1 : 0,
         );
       }
     });
@@ -119,7 +121,8 @@ export class TakeoutAnalysisModel {
         takenAt: r.taken_at, dateSource: r.date_source, dateDetail: r.date_detail, instant: r.instant, dateWarning: r.date_warning,
         metadata: location(r.metadata_part, r.metadata_path), companion: r.companion, duplicateOf: location(r.duplicate_of_part, r.duplicate_of_path),
         archive: {
-          status: r.archive_status, proof: r.archive_proof, key: r.archived_key, candidates: JSON.parse(r.archive_candidates) as string[], sameNameAndSize: r.same_name_and_size === 1,
+          status: r.archive_status, proof: r.archive_proof, key: r.archived_key, archivedEtag: r.archived_etag,
+          candidates: JSON.parse(r.archive_candidates) as string[], sameNameAndSize: r.same_name_and_size === 1,
         },
       })),
     };
@@ -128,10 +131,15 @@ export class TakeoutAnalysisModel {
   /**
    * Analyse de l'export seulement si elle vaut encore : mêmes zips (nom, taille, ETag), même inventaire du bucket dédié
    * (date de fin), mêmes albums conservés (comparés normalisés) ; `null` sinon (story 4.3).
+   *
+   * `inventoryCompletedAt` peut valoir `undefined` pour ignorer volontairement ce contrôle (story 4.3, plan
+   * d'archivage) : l'appelant compare alors lui-même la fraîcheur de l'inventaire du bucket dédié séparément, car un
+   * inventaire plus récent que celui de l'analyse (mais pas plus ancien) reste utilisable pour les destinations
+   * occupées sans invalider l'analyse elle-même (statuts d'archivage, dates, doublons internes).
    */
   findValid(
     exportId: string,
-    current: { zips: { name: string; size: number; etag: string | null }[]; inventoryCompletedAt: string | null; keptAlbums: string[] },
+    current: { zips: { name: string; size: number; etag: string | null }[]; inventoryCompletedAt: string | null | undefined; keptAlbums: string[] },
   ): StoredTakeoutAnalysis | null {
     const analysis = this.find(exportId);
     const stamp = (list: { name: string; size: number; etag: string | null }[]): string =>
@@ -139,7 +147,7 @@ export class TakeoutAnalysisModel {
     if (analysis === null) return null;
     const same =
       stamp(analysis.zips) === stamp(current.zips) &&
-      analysis.inventoryCompletedAt === current.inventoryCompletedAt &&
+      (current.inventoryCompletedAt === undefined || analysis.inventoryCompletedAt === current.inventoryCompletedAt) &&
       JSON.stringify(analysis.keptAlbums) === JSON.stringify(normalizedAlbums(current.keptAlbums));
     return same ? analysis : null;
   }

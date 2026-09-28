@@ -1,12 +1,23 @@
-// POINT D'ACCÈS EN ÉCRITURE UNIQUE (NFR-1, story 3.1). Seul module de `src/` autorisé à importer une commande S3 qui
-// modifie un bucket. Il n'importe que la copie côté serveur et la lecture de métadonnées : aucune suppression, aucun
-// dépôt d'octets. Les clés Cubbit donnent accès à tout l'espace de travail : ce module est la seule barrière entre
-// l'outil et les exemplaires uniques (`marceau`, `marceau-photos/backups/`). Toute évolution passe par ses tests.
-import { CopyObjectCommand, HeadBucketCommand, HeadObjectCommand, S3Client } from '@aws-sdk/client-s3';
+// POINT D'ACCÈS EN ÉCRITURE UNIQUE (NFR-1, stories 3.1 et 4.3). Seul module de `src/` autorisé à importer une commande
+// S3 qui modifie un bucket. Il n'importe que la copie côté serveur, le dépôt d'un fichier local (en une requête ou en
+// plusieurs parties) et la lecture de métadonnées (dont la liste, en lecture seule, des dépôts multipart inachevés) :
+// aucune suppression. Les clés Cubbit donnent accès à tout l'espace de travail : ce module est la seule barrière
+// entre l'outil et les exemplaires uniques (`marceau`, `marceau-photos/backups/`). Toute évolution passe par ses tests.
+import {
+  CompleteMultipartUploadCommand,
+  CopyObjectCommand,
+  CreateMultipartUploadCommand,
+  HeadBucketCommand,
+  HeadObjectCommand,
+  ListMultipartUploadsCommand,
+  PutObjectCommand,
+  S3Client,
+  UploadPartCommand,
+} from '@aws-sdk/client-s3';
 import { ALBUMS_ROOT, CHRONO_ROOT, QUARANTINE_ROOT } from '../inventory/repair-plan';
 import { bucketNameProblem } from '../utils/bucket-name';
 import { S3_SEND_DEADLINE_MS } from './s3-client';
-import { ArchiveWriter, DestinationObject } from './types';
+import { ArchiveWriter, DestinationObject, IncompleteMultipartUpload } from './types';
 
 /** Espaces du bucket dédié où l'outil peut écrire. Tout le reste (dont `backups/`) est refusé. */
 export const WRITABLE_ROOTS: readonly string[] = [CHRONO_ROOT, ALBUMS_ROOT, QUARANTINE_ROOT];
@@ -126,16 +137,31 @@ export function isCopyRefusedBeforeWrite(error: unknown): boolean {
 
 const unquote = (etag: string | undefined): string | null => (etag ? etag.replace(/^"|"$/g, '') : null);
 
+/**
+ * Au-delà de cette taille, `uploadFile` dépose le contenu en plusieurs parties (story 4.3). En-deçà, `PutObject` en
+ * une seule requête suffit très largement (photos et la plupart des vidéos d'un export Google Photos).
+ */
+export const MULTIPART_UPLOAD_THRESHOLD_BYTES = 100 * 1024 * 1024;
+
+/** Taille de chaque partie d'un dépôt multipart (hors la dernière, plus petite ou égale). */
+export const UPLOAD_PART_SIZE_BYTES = 16 * 1024 * 1024;
+
 export class S3ArchiveWriter implements ArchiveWriter {
   readonly sourceBucket: string;
   readonly sourcePrefixes: readonly string[];
   readonly destinationBucket: string;
 
-  /** `sendDeadlineMs` : échéance de chaque envoi, retentatives comprises (injectée par les tests). */
+  /**
+   * `sendDeadlineMs` : échéance de chaque envoi, retentatives comprises (injectée par les tests).
+   * `multipartThresholdBytes`/`partSizeBytes` : seuil et taille de partie d'`uploadFile`, injectés par les tests pour
+   * éviter d'allouer des tampons de test de plusieurs dizaines de mégaoctets.
+   */
   constructor(
     private readonly client: Pick<S3Client, 'send'>,
     scope: WriterScope,
     private readonly sendDeadlineMs: number = S3_SEND_DEADLINE_MS,
+    private readonly multipartThresholdBytes: number = MULTIPART_UPLOAD_THRESHOLD_BYTES,
+    private readonly partSizeBytes: number = UPLOAD_PART_SIZE_BYTES,
   ) {
     refuseIf(scopeProblem(scope));
     this.sourceBucket = scope.sourceBucket;
@@ -176,6 +202,92 @@ export class S3ArchiveWriter implements ArchiveWriter {
       }),
       this.deadline(),
     );
+  }
+
+  /**
+   * Dépose `body` à `destinationKey` (story 4.3) : `PutObject` en une seule requête sous
+   * `MULTIPART_UPLOAD_THRESHOLD_BYTES`, sinon un dépôt multipart à parties de taille fixe
+   * (`UPLOAD_PART_SIZE_BYTES`, hors la dernière). N'écrase rien intentionnellement : l'appelant vérifie l'absence de la
+   * destination par `headDestination` avant d'appeler cette méthode ; Cubbit peut cependant écraser un objet existant
+   * comme tout dépôt S3 nu (aucune condition d'unicité n'existe pour `PutObject`).
+   */
+  async uploadFile(destinationKey: string, body: Buffer): Promise<void> {
+    refuseIf(destinationProblem(this.destinationBucket, destinationKey, this));
+    if (body.length <= this.multipartThresholdBytes) {
+      await this.client.send(
+        new PutObjectCommand({ Bucket: this.destinationBucket, Key: destinationKey, Body: body, ContentLength: body.length }),
+        this.deadline(),
+      );
+      return;
+    }
+    // Une erreur ici laisse l'upload multipart inachevé : ses parties ne sont jamais servies tant que
+    // `CompleteMultipartUpload` n'a pas réussi, et n'écrasent donc jamais d'objet existant. Ce module n'ajoute
+    // volontairement pas de commande d'abandon du dépôt en plusieurs parties : ce serait la seule commande de
+    // suppression du point d'accès, contraire à sa garantie « aucune suppression ». Signalé (lecture seule,
+    // `listIncompleteMultipartUploads`) à l'appelant, jamais purgé ici : Marceau doit poser côté Cubbit une règle de
+    // cycle de vie (`AbortIncompleteMultipartUpload`) pour que ces parties facturées ne s'accumulent pas.
+    const uploadId = await this.startMultipartUpload(destinationKey);
+    const parts = await this.uploadParts(destinationKey, uploadId, body);
+    await this.client.send(
+      new CompleteMultipartUploadCommand({
+        Bucket: this.destinationBucket,
+        Key: destinationKey,
+        UploadId: uploadId,
+        MultipartUpload: { Parts: parts },
+      }),
+      this.deadline(),
+    );
+  }
+
+  private async startMultipartUpload(destinationKey: string): Promise<string> {
+    const response = await this.client.send(
+      new CreateMultipartUploadCommand({ Bucket: this.destinationBucket, Key: destinationKey }),
+      this.deadline(),
+    );
+    if (!response.UploadId) throw new Error(`dépôt multipart de ${destinationKey} : aucun UploadId renvoyé`);
+    return response.UploadId;
+  }
+
+  private async uploadParts(destinationKey: string, uploadId: string, body: Buffer): Promise<{ ETag: string; PartNumber: number }[]> {
+    const parts: { ETag: string; PartNumber: number }[] = [];
+    let partNumber = 1;
+    for (let offset = 0; offset < body.length; offset += this.partSizeBytes) {
+      const chunk = body.subarray(offset, Math.min(offset + this.partSizeBytes, body.length));
+      const response = await this.client.send(
+        new UploadPartCommand({ Bucket: this.destinationBucket, Key: destinationKey, UploadId: uploadId, PartNumber: partNumber, Body: chunk }),
+        this.deadline(),
+      );
+      if (!response.ETag) throw new Error(`dépôt multipart de ${destinationKey} : partie ${partNumber} sans ETag`);
+      parts.push({ ETag: response.ETag, PartNumber: partNumber });
+      partNumber++;
+    }
+    return parts;
+  }
+
+  /**
+   * Dépôts multipart inachevés sur le bucket dédié, en lecture seule (`ListMultipartUploads`, story 4.3, correction) :
+   * jamais abandonnés ici (aucune commande de suppression dans ce module). Pagine jusqu'à épuisement.
+   */
+  async listIncompleteMultipartUploads(): Promise<IncompleteMultipartUpload[]> {
+    const uploads: IncompleteMultipartUpload[] = [];
+    let keyMarker: string | undefined;
+    let uploadIdMarker: string | undefined;
+    for (;;) {
+      const response = await this.client.send(
+        new ListMultipartUploadsCommand({ Bucket: this.destinationBucket, KeyMarker: keyMarker, UploadIdMarker: uploadIdMarker }),
+        this.deadline(),
+      );
+      for (const upload of response.Uploads ?? []) {
+        if (!upload.Key || !upload.UploadId) continue;
+        uploads.push({ key: upload.Key, uploadId: upload.UploadId, initiated: upload.Initiated ?? null });
+      }
+      if (!response.IsTruncated) break;
+      // Garde de progression : un serveur qui annonce une suite sans marqueur ferait boucler indéfiniment.
+      if (!response.NextKeyMarker && !response.NextUploadIdMarker) break;
+      keyMarker = response.NextKeyMarker;
+      uploadIdMarker = response.NextUploadIdMarker;
+    }
+    return uploads;
   }
 
   /**
