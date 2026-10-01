@@ -140,8 +140,14 @@ const unquote = (etag: string | undefined): string | null => (etag ? etag.replac
 /**
  * Au-delà de cette taille, `uploadFile` dépose le contenu en plusieurs parties (story 4.3). En-deçà, `PutObject` en
  * une seule requête suffit très largement (photos et la plupart des vidéos d'un export Google Photos).
+ *
+ * Seuil relevé à 200 Mio le 2026-10-01 : Cubbit n'offre pas de règle de cycle de vie
+ * `AbortIncompleteMultipartUpload`, donc un dépôt multipart interrompu y laisse des parties facturées que l'outil
+ * signale (lecture seule) mais ne peut pas supprimer — il n'expose aucune suppression (NFR-1). Un dépôt en une seule
+ * requête ne laisse jamais rien derrière lui. Mesure sur l'export réel du 2026-08-06 : plus gros média 141,2 Mo,
+ * deux médias seulement au-dessus de 100 Mio. La limite S3 d'une requête unique est de 5 Gio : la marge reste grande.
  */
-export const MULTIPART_UPLOAD_THRESHOLD_BYTES = 100 * 1024 * 1024;
+export const MULTIPART_UPLOAD_THRESHOLD_BYTES = 200 * 1024 * 1024;
 
 /** Taille de chaque partie d'un dépôt multipart (hors la dernière, plus petite ou égale). */
 export const UPLOAD_PART_SIZE_BYTES = 16 * 1024 * 1024;
