@@ -18,6 +18,7 @@ import {
   SourceObjectState,
   sourceFreshnessProblems,
 } from '../inventory/repair-report';
+import { writeNewFile, NewFileOutcome } from '../utils/file-utils';
 import { formatBytes, formatNumber } from '../utils/format';
 import { getLogger } from '../utils/logger';
 import { readPlanInput } from './plan';
@@ -99,7 +100,7 @@ export async function reportCommand(config: AppConfig, options: ReportOptions, n
 
   // Le fichier de suppression est écrit AVANT l'attestation : l'écran ne désigne jamais un fichier qui n'a pas été produit.
   const suppression = report.attestation.granted && options.exportSuppression
-    ? await writeSuppressionFile(options.exportSuppression, deletionKeysCsv(report, reportedAt))
+    ? await writeNewFile(options.exportSuppression, deletionKeysCsv(report, reportedAt))
     : null;
 
   displayJournal(report, options.bucket);
@@ -118,21 +119,6 @@ export async function reportCommand(config: AppConfig, options: ReportOptions, n
     if (suppression?.written !== true) return 1;
   }
   return report.attestation.granted ? 0 : 1;
-}
-
-type SuppressionOutcome = { written: true; file: string } | { written: false; file: string; reason: string };
-
-/** Écriture exclusive (`wx`) : un fichier existant n'est jamais écrasé, même s'il apparaît entre-temps. */
-async function writeSuppressionFile(file: string, content: string): Promise<SuppressionOutcome> {
-  const resolved = path.resolve(file);
-  await fs.ensureDir(path.dirname(resolved));
-  try {
-    await fs.writeFile(resolved, content, { encoding: 'utf8', flag: 'wx' });
-    return { written: true, file: resolved };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    return { written: false, file: resolved, reason: 'existe déjà (choisissez un nouveau fichier)' };
-  }
 }
 
 async function writeExport(file: string, content: string): Promise<void> {
@@ -226,7 +212,7 @@ function displayCounterMetrics(report: RepairReport): void {
 export const suppressionCommandLine = (bucket?: string): string =>
   `gpb reparation rapport${bucket ? ` --bucket ${bucket}` : ''} --verifier --export-suppression suppression.csv`;
 
-function displayAttestation(report: RepairReport, options: ReportOptions, suppression: SuppressionOutcome | null): void {
+function displayAttestation(report: RepairReport, options: ReportOptions, suppression: NewFileOutcome | null): void {
   console.log(chalk.cyan('\n━━ Attestation ━━'));
   const age = (label: string, date: Date | null, hours: number | null): string =>
     date && hours !== null ? `${label} du ${date.toISOString()} (il y a ${hours.toFixed(1)} h)` : `${label} : aucun`;

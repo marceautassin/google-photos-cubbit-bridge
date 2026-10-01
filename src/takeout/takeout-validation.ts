@@ -96,6 +96,10 @@ interface FolderContent {
   albumMetadata: boolean;
 }
 
+/** Raisons de non-reconnaissance d'un JSON, reprises par l'attestation (story 4.5) pour distinguer orphelins et ambigus. */
+export const ORPHAN_JSON_REASON = 'métadonnées sans média correspondant';
+export const AMBIGUOUS_JSON_REASON = 'JSON ambigu : plusieurs fichiers portent ce nom';
+
 /** Une dernière partie au moins à ce ratio de la plus grosse est « de taille pleine » : une suivante peut manquer. */
 const FULL_PART_RATIO = 0.9;
 
@@ -159,9 +163,9 @@ export async function analyzeExport(group: ExportGroup, supportedFormats: string
   let orphanJsonCount = 0;
   for (const [name, content] of folders) {
     const { pairs, unpairedJson, ambiguousJson } = pairMetadata([...content.media.keys()], [...content.json.keys()], content.files);
-    for (const json of unpairedJson) unrecognized.push({ ...content.json.get(json)!, reason: 'métadonnées sans média correspondant' });
+    for (const json of unpairedJson) unrecognized.push({ ...content.json.get(json)!, reason: ORPHAN_JSON_REASON });
     for (const json of ambiguousJson) {
-      unrecognized.push({ ...content.json.get(json)!, reason: 'JSON ambigu : plusieurs fichiers portent ce nom' });
+      unrecognized.push({ ...content.json.get(json)!, reason: AMBIGUOUS_JSON_REASON });
       ambiguous.push(`${name}/${json}`);
     }
     orphanJsonCount += unpairedJson.length;

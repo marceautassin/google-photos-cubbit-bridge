@@ -1,6 +1,5 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import * as path from 'path';
 import { S3ArchiveWriter, WriterScope } from '../clients/archive-writer';
 import { createS3Client } from '../clients/s3-client';
 import { ArchiveWriter, IncompleteMultipartUpload } from '../clients/types';
@@ -28,11 +27,10 @@ import {
 import { ArchivePlanRefusedError, locationKey, TakeoutArchivePlan, verifyStoredArchivePlan } from '../takeout/archive-plan';
 import { readZipDirectory, localZipSource, ZipEntry } from '../takeout/zip-directory';
 import { readWholeZipEntry } from '../takeout/zip-entry-stream';
-import { ensureLocalZip, LocalZip, VERIFICATION_LABELS } from '../takeout/zip-download';
 import { describeError, formatBytes, formatNumber } from '../utils/format';
 import { getLogger } from '../utils/logger';
 import { ArchivePlanContext, readArchivePlanInput } from './takeout-plan';
-import { defaultSources, ORIGIN_LABELS, PHASE_LABELS, progressPrinter, selectGroups, TakeoutSources } from './takeout';
+import { defaultSources, ensureLocalZips, selectGroups, TakeoutSources } from './takeout';
 import { installStopHandlers, liftLock } from './execution-control';
 import { runCommand } from './run-command';
 
@@ -205,20 +203,7 @@ async function buildMediaReader(config: AppConfig, sources: TakeoutSources, plan
   const group = groups.find((g) => g.id === plan.exportId);
   if (!group) throw new Error(`export ${plan.exportId} introuvable parmi les zips distants`);
 
-  const directory = path.resolve(dossier ?? path.join(path.dirname(config.database.path), 'takeout', plan.exportId));
-  console.log(chalk.cyan(`\nZips locaux (${directory}) :`));
-  const downloader = sources.downloader();
-  const progress = progressPrinter();
-  const localZips: LocalZip[] = [];
-  for (const { zip } of group.parts) {
-    if (zip.key === undefined) throw new Error(`${zip.name} : clé du zip dans le bucket inconnue`);
-    const local = await ensureLocalZip(downloader, { name: zip.name, key: zip.key, size: zip.size, etag: zip.etag ?? null }, directory, {
-      onProgress: (p) => progress(`${p.zip} — ${PHASE_LABELS[p.phase]}`, p.done, p.total),
-      remoteEntries: async () => (await readZipDirectory(await zip.open())).entries,
-    });
-    localZips.push(local);
-    console.log(`   ${local.name}  ${formatBytes(local.size)}  ${ORIGIN_LABELS[local.origin]} — ${VERIFICATION_LABELS[local.verification]}`);
-  }
+  const localZips = await ensureLocalZips(config, sources, group, dossier);
 
   const entries = new Map<string, { file: string; entry: ZipEntry }>();
   for (const local of localZips) {

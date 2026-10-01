@@ -351,6 +351,14 @@ function journalAnomalies(plan: RepairPlan, states: Map<string, JournalEntry>): 
   return anomalies;
 }
 
+/** Raison de refuser un inventaire daté dans le futur ou de plus de `MAX_INVENTORY_AGE_HOURS`, `null` s'il est assez récent. */
+export function inventoryAgeReason(label: string, hours: number | null, scan: string): string | null {
+  if (hours === null) return null;
+  if (hours < 0) return `inventaire ${label} daté dans le futur (${(-hours).toFixed(1)} h) : horloge à vérifier, relancez « ${scan} »`;
+  if (hours > MAX_INVENTORY_AGE_HOURS) return `inventaire ${label} vieux de ${hours.toFixed(1)} h (plus de ${MAX_INVENTORY_AGE_HOURS} h) : relancez « ${scan} »`;
+  return null;
+}
+
 /** Raisons de refuser l'attestation, vide si elle est accordée. */
 export function attestationReasons(report: Omit<RepairReport, 'attestation'>): string[] {
   const reasons: string[] = [];
@@ -381,15 +389,12 @@ export function attestationReasons(report: Omit<RepairReport, 'attestation'>): s
         `${formatNumber(removed.length)} retiré(s), ${formatNumber(modified.length)} modifié(s) — non archivés tels quels`,
     );
   }
-  const tooOld = (label: string, hours: number | null, scan: string): void => {
-    if (hours === null) return;
-    if (hours < 0) reasons.push(`inventaire ${label} daté dans le futur (${(-hours).toFixed(1)} h) : horloge à vérifier, relancez « ${scan} »`);
-    else if (hours > MAX_INVENTORY_AGE_HOURS) {
-      reasons.push(`inventaire ${label} vieux de ${hours.toFixed(1)} h (plus de ${MAX_INVENTORY_AGE_HOURS} h) : relancez « ${scan} »`);
-    }
-  };
-  tooOld('du bucket source', report.inventoryAgesHours.source, sourceScan);
-  tooOld('du bucket dédié', report.inventoryAgesHours.destination, scan);
+  for (const reason of [
+    inventoryAgeReason('du bucket source', report.inventoryAgesHours.source, sourceScan),
+    inventoryAgeReason('du bucket dédié', report.inventoryAgesHours.destination, scan),
+  ]) {
+    if (reason !== null) reasons.push(reason);
+  }
   if (!report.verificationRequested) reasons.push('vérification de l\'arrivée non faite (option --verifier)');
   else if (!verification) reasons.push(`aucun inventaire du bucket dédié « ${destinationBucket} » : lancez « ${scan} »`);
   else {
@@ -406,7 +411,7 @@ export function attestationReasons(report: Omit<RepairReport, 'attestation'>): s
   return reasons;
 }
 
-const ageHours = (completedAt: Date | null, now: Date): number | null =>
+export const ageHours = (completedAt: Date | null, now: Date): number | null =>
   completedAt === null ? null : (now.getTime() - completedAt.getTime()) / 3_600_000;
 
 /** Rapport complet et attestation. Pur. */

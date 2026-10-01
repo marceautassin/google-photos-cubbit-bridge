@@ -104,6 +104,11 @@ export class TakeoutAnalysisModel {
     });
   }
 
+  /** Identifiants des exports analysés (lecture locale, sans réseau). */
+  exportIds(): string[] {
+    return (this.db.prepare('SELECT export_id FROM takeout_analyses ORDER BY export_id').all() as unknown as { export_id: string }[]).map((r) => r.export_id);
+  }
+
   find(exportId: string): StoredTakeoutAnalysis | null {
     const row = this.db.prepare('SELECT * FROM takeout_analyses WHERE export_id = ?').get(exportId) as unknown as AnalysisRow | undefined;
     if (!row) return null;

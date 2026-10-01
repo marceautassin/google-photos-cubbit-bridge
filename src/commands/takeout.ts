@@ -34,6 +34,7 @@ import { registerDisabledCommand } from './disabled-command';
 import { requireValidConfig } from './inventory';
 import { runCommand } from './run-command';
 import { register as registerArchiver } from './takeout-archive';
+import { register as registerAttester } from './takeout-attest';
 import { register as registerPlanifier } from './takeout-plan';
 
 /**
@@ -111,6 +112,7 @@ export function register(program: Command, config: AppConfig, sources: TakeoutSo
 
   registerPlanifier(takeoutCmd, config, sources);
   registerArchiver(takeoutCmd, config, sources);
+  registerAttester(takeoutCmd, config, sources);
 
   for (const [name, description] of [
     ['import', 'Importer un export Takeout extrait (ancien format)'],
@@ -277,6 +279,43 @@ export const ORIGIN_LABELS: Record<LocalZip['origin'], string> = {
   telecharge: 'téléchargé',
 };
 
+/** Dossier de travail local des zips d'un export (défaut : `data/takeout/<export>/`). */
+export const localZipsDirectory = (config: AppConfig, exportId: string, dossier?: string): string =>
+  path.resolve(dossier ?? path.join(path.dirname(config.database.path), 'takeout', exportId));
+
+/** Télécharge (ou réutilise après revérification, sans retéléchargement) et vérifie les zips locaux d'un export. */
+export async function ensureLocalZips(config: AppConfig, sources: TakeoutSources, group: ExportGroup, dossier?: string): Promise<LocalZip[]> {
+  const directory = localZipsDirectory(config, group.id, dossier);
+  console.log(chalk.cyan(`\nZips locaux (${directory}) :`));
+  const downloader = sources.downloader();
+  const progress = progressPrinter();
+  const localZips: LocalZip[] = [];
+  for (const { zip } of group.parts) {
+    if (zip.key === undefined) throw new Error(`${zip.name} : clé du zip dans le bucket inconnue`);
+    const local = await ensureLocalZip(downloader, { name: zip.name, key: zip.key, size: zip.size, etag: zip.etag ?? null }, directory, {
+      onProgress: (p) => progress(`${p.zip} — ${PHASE_LABELS[p.phase]}`, p.done, p.total),
+      remoteEntries: async () => (await readZipDirectory(await zip.open())).entries,
+    });
+    localZips.push(local);
+    const part = local.partSize === null ? '' : ` (parties de ${partSizeLabel(local.partSize)})`;
+    console.log(`   ${local.name}  ${formatBytes(local.size)}  ${ORIGIN_LABELS[local.origin]} — ${VERIFICATION_LABELS[local.verification]}${part}`);
+    if (local.detail) console.log(chalk.yellow(`      ${local.detail}`));
+    if (local.note) console.log(chalk.yellow(`      ${local.note}`));
+  }
+  return localZips;
+}
+
+/** Même export, lu sur les zips locaux vérifiés : ce sont leurs octets qui sont analysés, archivés puis attestés. */
+export function localExportGroup(group: ExportGroup, localZips: LocalZip[]): ExportGroup {
+  return {
+    id: group.id,
+    parts: group.parts.map((p, i) => {
+      const local = localZips[i]!;
+      return { number: p.number, zip: { name: local.name, location: local.path, size: local.size, open: () => localZipSource(local.path) } };
+    }),
+  };
+}
+
 async function analyserCommand(config: AppConfig, sources: TakeoutSources, options: AnalyserOptions): Promise<void> {
   const expectedParts = parsePartCount(options.parties)!;
   checkTimeZone(options.fuseau);
@@ -300,38 +339,15 @@ async function analyserCommand(config: AppConfig, sources: TakeoutSources, optio
     throw new Error(`export ${group.id} non exploitable (gpb takeout valider --export ${options.export} --parties ${expectedParts}) : ${remoteReport.problems.join(' ; ')}`);
   }
 
-  const directory = path.resolve(options.dossier ?? path.join(path.dirname(config.database.path), 'takeout', group.id));
-  console.log(chalk.cyan(`\nZips locaux (${directory}) :`));
-  const downloader = sources.downloader();
-  const progress = progressPrinter();
-  const localZips: LocalZip[] = [];
-  for (const { zip } of group.parts) {
-    if (zip.key === undefined) throw new Error(`${zip.name} : clé du zip dans le bucket inconnue`);
-    const local = await ensureLocalZip(downloader, { name: zip.name, key: zip.key, size: zip.size, etag: zip.etag ?? null }, directory, {
-      onProgress: (p) => progress(`${p.zip} — ${PHASE_LABELS[p.phase]}`, p.done, p.total),
-      remoteEntries: async () => (await readZipDirectory(await zip.open())).entries,
-    });
-    localZips.push(local);
-    const part = local.partSize === null ? '' : ` (parties de ${partSizeLabel(local.partSize)})`;
-    console.log(`   ${local.name}  ${formatBytes(local.size)}  ${ORIGIN_LABELS[local.origin]} — ${VERIFICATION_LABELS[local.verification]}${part}`);
-    if (local.detail) console.log(chalk.yellow(`      ${local.detail}`));
-    if (local.note) console.log(chalk.yellow(`      ${local.note}`));
-  }
-
-  // Validation rejouée sur les octets locaux vérifiés : ce sont eux qui sont analysés.
-  const localGroup: ExportGroup = {
-    id: group.id,
-    parts: group.parts.map((p, i) => {
-      const local = localZips[i]!;
-      return { number: p.number, zip: { name: local.name, location: local.path, size: local.size, open: () => localZipSource(local.path) } };
-    }),
-  };
+  const localZips = await ensureLocalZips(config, sources, group, options.dossier);
+  const localGroup = localExportGroup(group, localZips);
   const report = await analyzeExport(localGroup, config.sync.supportedFormats, expectedParts);
   if (!report.exploitable || report.media.length !== remoteReport.media.length) {
     throw new Error(`zips locaux incohérents avec la validation distante (${report.media.length} médias contre ${remoteReport.media.length}) : ${report.problems.join(' ; ')}`);
   }
 
   console.log(chalk.cyan(`\nLecture des médias (${formatNumber(report.media.length)}) :`));
+  const progress = progressPrinter();
   const media = await analyzeTakeoutExport({
     report,
     zipPaths: new Map(localZips.map((z) => [z.name, z.path])),

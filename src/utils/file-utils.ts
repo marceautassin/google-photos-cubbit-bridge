@@ -244,3 +244,18 @@ export function extractDateFromFilename(filename: string): Date | null {
   if (year < 1970 || year > new Date().getFullYear() + 1) return null;
   return new Date(year, month - 1, day, hour, minute, second);
 }
+
+export type NewFileOutcome = { written: true; file: string } | { written: false; file: string; reason: string };
+
+/** Écriture exclusive (`wx`) : un fichier existant n'est jamais écrasé, même s'il apparaît entre-temps. */
+export async function writeNewFile(file: string, content: string): Promise<NewFileOutcome> {
+  const resolved = path.resolve(file);
+  await fs.ensureDir(path.dirname(resolved));
+  try {
+    await fs.writeFile(resolved, content, { encoding: 'utf8', flag: 'wx' });
+    return { written: true, file: resolved };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    return { written: false, file: resolved, reason: 'existe déjà (choisissez un nouveau fichier)' };
+  }
+}

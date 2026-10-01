@@ -68,12 +68,12 @@ development_status:
   3-3-rendre-compte-de-la-reparation: done
   epic-3-retrospective: optional
 
-  epic-4: in-progress
+  epic-4: done
   4-1-valider-une-archive-takeout-avant-traitement: done
   4-2-dater-et-identifier-chaque-media-de-facon-stable: done
   4-3-archiver-uniquement-les-medias-nouveaux: done
   4-4-reprendre-une-passe-d-archivage-interrompue: done
-  4-5-attester-que-tout-est-bien-sauvegarde-avant-que-je-supprime: backlog
+  4-5-attester-que-tout-est-bien-sauvegarde-avant-que-je-supprime: done
   epic-4-retrospective: optional
 
   epic-5: backlog
