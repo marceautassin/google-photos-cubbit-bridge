@@ -158,11 +158,29 @@ function suffixGroup(group: NamingEntry[], taken: Set<string>, result: NamingRes
 }
 
 /**
+ * Clé de conflit du nom d'origine dont `occupied` est une variante suffixée par un ETag (`base_<hex multiple de
+ * SUFFIX_LENGTH>ext`), `null` si ce n'en est pas une.
+ * Faux positif assumé : un nom d'origine de cette forme (`IMG_20230415.jpg`) est pris pour une variante, et un
+ * homonyme nu arrivant seul (`IMG.jpg`) est alors suffixé au lieu d'être conservé tel quel. Sans perte ; ne pas
+ * resserrer en comparant le suffixe à l'ETag de l'objet : le suffixe vient du MD5, l'ETag d'un gros objet est multipart.
+ */
+function suffixedVariantOf(occupied: OccupiedDestination): string | null {
+  const { base, extension } = splitName(comparableName(occupied.name));
+  const match = /^(.+)_([0-9a-f]+)$/.exec(base);
+  if (!match || match[2]!.length % SUFFIX_LENGTH !== 0) return null;
+  return conflictKey(occupied.folder, `${match[1]}${extension}`);
+}
+
+/**
  * Nom de destination de chaque entrée selon `DISAMBIGUATION_RULE`, sans jamais lever d'erreur : les cas impossibles
  * sont collectés dans `anomalies` (chemin « rapport »). Pur, déterministe, indépendant de l'ordre d'entrée.
  * `occupied` : destinations déjà présentes dans l'archive, jamais renommées.
+ *
+ * `variantsCountAsHomonyms` (archivage Takeout, story 4.4) : une variante suffixée déjà présente d'un nom compte comme un
+ * autre porteur de ce nom, donc le seul nouvel arrivant est suffixé lui aussi. Sans cela, une passe interrompue entre deux
+ * homonymes puis replanifiée donnerait au second le nom nu, alors que la passe ininterrompue l'aurait suffixé.
  */
-export function resolveNames(entries: NamingEntry[], occupied: OccupiedDestination[] = []): NamingResult {
+export function resolveNames(entries: NamingEntry[], occupied: OccupiedDestination[] = [], variantsCountAsHomonyms = false): NamingResult {
   const result: NamingResult = { names: new Map(), alreadyArchived: new Map(), anomalies: [] };
   const taken = new Set(occupied.map((o) => conflictKey(o.folder, o.name)));
   const occupiedByEtag = groupBy(
@@ -170,6 +188,7 @@ export function resolveNames(entries: NamingEntry[], occupied: OccupiedDestinati
     (o) => `${comparableName(o.folder)}\u0000${normalizeEtag(o.etag)}`,
   );
 
+  const occupiedVariants = new Set(variantsCountAsHomonyms ? occupied.map(suffixedVariantOf).filter((k) => k !== null) : []);
   const arrivals: NamingEntry[] = [];
   for (const entry of entries) {
     const etag = normalizeEtag(entry.etag);
@@ -184,7 +203,7 @@ export function resolveNames(entries: NamingEntry[], occupied: OccupiedDestinati
   const groups = [...groupBy(arrivals, (e) => conflictKey(e.folder, e.name)).entries()].sort(([a], [b]) => compareStrings(a, b));
   const toSuffix: NamingEntry[][] = [];
   for (const [key, group] of groups) {
-    if (group.length === 1 && !taken.has(key)) {
+    if (group.length === 1 && !taken.has(key) && !occupiedVariants.has(key)) {
       result.names.set(group[0]!.id, group[0]!.name);
       taken.add(key);
     } else {

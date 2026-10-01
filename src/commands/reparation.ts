@@ -30,6 +30,7 @@ import { getLogger } from '../utils/logger';
 import { readPlanInput } from './plan';
 import { MAX_INVENTORY_AGE_HOURS } from '../inventory/repair-report';
 import { reportCommand, ReportOptions } from './reparation-rapport';
+import { installStopHandlers, liftLock } from './execution-control';
 import { runCommand } from './run-command';
 
 /**
@@ -78,7 +79,9 @@ export function register(program: Command, config: AppConfig): void {
     .option('--confirmer <empreinte>', 'Empreinte du plan (complète ou 12 premiers caractères) : exécute réellement')
     .option(
       '--lever-verrou',
-      `Lever le verrou d'une exécution arrêtée sans le libérer (refusé si sa dernière activité date de moins de ${LOCK_IDLE_MINUTES} min)`,
+      `Lever le verrou global d'exécution (partagé avec « gpb takeout archiver ») d'une exécution arrêtée sans le libérer. ` +
+        `Immédiat si le processus qui le détient n'existe plus sur ce poste (coupure, extinction) ; ` +
+        `sinon refusé si sa dernière activité date de moins de ${LOCK_IDLE_MINUTES} min`,
     )
     .action((options: ExecuteOptions) =>
       runCommand('Exécution du plan :', async () => {
@@ -144,20 +147,11 @@ export async function executeCommand(config: AppConfig, options: ExecuteOptions,
   const now = deps.now ?? ((): Date => new Date());
   const journal = new RepairExecutionModel();
   if (options.leverVerrou) {
-    let lifted;
     try {
-      lifted = journal.forceReleaseLock(now());
+      liftLock(journal, now());
     } catch (error) {
       return refuse(error instanceof Error ? error.message : String(error));
     }
-    console.log(
-      lifted
-        ? chalk.yellow(
-            `🔓 Verrou levé : processus ${lifted.pid} sur ${lifted.host}, pris le ${lifted.acquiredAt.toISOString()}, ` +
-              `dernière activité le ${lifted.lastActivityAt.toISOString()}\n`,
-          )
-        : chalk.gray('   Aucun verrou d\'exécution à lever.\n'),
-    );
   }
   displayOverview(plan, summarizeExecution(plan, journal.findStates(plan.id)));
 
@@ -193,25 +187,13 @@ export async function executeCommand(config: AppConfig, options: ExecuteOptions,
     throw error;
   }
 
-  let stopRequested = false;
-  const onSigint = (): void => {
-    if (stopRequested) {
-      // Second Ctrl-C : sortie immédiate, verrou libéré. La ligne en cours reste « a_faire » ou « copie_en_cours », jamais
-      // « copie » : la relance la reprend par un HEAD.
-      journal.releaseLock(owner);
-      process.stdout.write('\n');
-      process.exit(130);
-    }
-    stopRequested = true;
-    process.stdout.write(chalk.yellow('\n⏸️  Arrêt demandé : fin de la ligne en cours (copie et vérification), puis arrêt. Ctrl-C à nouveau pour quitter.\n'));
-  };
-  process.on('SIGINT', onSigint);
+  const stop = installStopHandlers('de la ligne', () => journal.releaseLock(owner));
   let result: ExecutionResult;
   try {
     result = await executePlan(plan, {
       writer,
       journal,
-      shouldStop: () => stopRequested,
+      shouldStop: stop.stopRequested,
       keepAlive: () => journal.touchLock(owner, now()),
       onProgress: displayProgress,
     });
@@ -219,7 +201,7 @@ export async function executeCommand(config: AppConfig, options: ExecuteOptions,
     if (error instanceof ExecutionRefusedError) return refuse(error.message);
     throw error;
   } finally {
-    process.off('SIGINT', onSigint);
+    stop.dispose();
     journal.releaseLock(owner);
   }
   return displayResult(plan, result);

@@ -224,6 +224,7 @@ export function buildArchivePlan(input: TakeoutPlanInput): TakeoutArchivePlan {
   const naming = resolveNames(
     entries.map((e) => e.naming),
     occupied,
+    true, // replanification après une passe interrompue : les noms suffixés (Q1) restent ceux de la passe ininterrompue
   );
 
   for (const { media: m, naming: n } of entries) {

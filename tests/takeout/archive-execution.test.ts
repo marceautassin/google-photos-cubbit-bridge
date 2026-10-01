@@ -1,5 +1,6 @@
 import * as crypto from 'crypto';
 import { S3ArchiveWriter } from '../../src/clients/archive-writer';
+import type { ArchiveWriter } from '../../src/clients/types';
 import type { ExecutionJournal, ExecutionState, JournalEntry } from '../../src/inventory/plan-execution';
 import {
   archiveConfirmationMatches,
@@ -14,8 +15,8 @@ import {
   linesToSend,
   preflightArchiveExecution,
 } from '../../src/takeout/archive-execution';
-import { buildArchivePlan, locationKey, TakeoutArchivePlan, TakeoutPlanInput } from '../../src/takeout/archive-plan';
-import { AnalyzedMedia } from '../../src/takeout/takeout-analysis';
+import { archivedObjectsFrom, buildArchivePlan, locationKey, TakeoutArchivePlan, TakeoutPlanInput } from '../../src/takeout/archive-plan';
+import { AnalyzedMedia, matchArchive } from '../../src/takeout/takeout-analysis';
 import { computeMultipartEtag } from '../../src/utils/multipart-etag';
 import { FakeS3 } from '../fixtures/fake-s3';
 
@@ -55,10 +56,10 @@ function media(overrides: Partial<AnalyzedMedia> & Pick<AnalyzedMedia, 'part' | 
   };
 }
 
-function planInput(mediaList: AnalyzedMedia[]): TakeoutPlanInput {
+function planInput(mediaList: AnalyzedMedia[], occupied: TakeoutPlanInput['occupied'] = []): TakeoutPlanInput {
   return {
     exportId: '20260806T062636Z', destinationBucket: DEST, keptAlbums: [], analysisAnalyzedAt: '2026-09-16T10:00:00.000Z',
-    media: mediaList, occupied: [], destinationInventoryCompletedAt: '2026-09-16T09:00:00.000Z',
+    media: mediaList, occupied, destinationInventoryCompletedAt: '2026-09-16T09:00:00.000Z',
   };
 }
 
@@ -285,5 +286,221 @@ describe('ArchiveExecutionRefusedError : préflight en échec avant toute écrit
       executeArchivePlan({ ...plan, destinationBucket: 'autre-bucket' }, { writer, journal: new MemoryJournal(), readMedia: jest.fn() }),
     ).rejects.toThrow(ArchiveExecutionRefusedError);
     expect(s3.send).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Story 4.4 : reprise après coupure, équivalence avec une passe ininterrompue
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** « Le processus meurt » : levée par le faux writer ou le faux journal, après quoi plus rien n'est enregistré ni envoyé. */
+class Crash extends Error {}
+
+type CutPoint = 'avant-ligne' | 'apres-journal-avant-depot' | 'apres-depot-avant-journal' | 'pendant-verification' | 'avant-journal-copie';
+
+const THRESHOLDS = { multipartThresholdBytes: 10, partSizeBytes: 4 };
+
+/** Plan de 7 lignes à déposer : 4 nouveaux, 2 homonymes (suffixes Q1), 1 vidéo multipart, 1 objet déjà présent, 1 reclassement. */
+function equivalenceScenario() {
+  const bodies = new Map<string, Buffer>();
+  const mk = (path: string, text: string, overrides: Partial<AnalyzedMedia> = {}): AnalyzedMedia => {
+    const body = Buffer.from(text);
+    const m = media({ part: '1', path, fileName: path.split('/').pop()!, md5: md5Hex(body), size: body.length, ...overrides });
+    bodies.set(locationKey(m), body);
+    return m;
+  };
+  const mediaList = [
+    mk('a.jpg', 'aaaa'),
+    mk('x/img.jpg', 'imgx'),
+    mk('y/img.jpg', 'imgy'),
+    mk('big.mp4', '0123456789abcdef'), // 16 octets > seuil injecté (10) : dépôt multipart
+    mk('deja.jpg', 'deja'),
+    mk('c.jpg', 'cccc'),
+    mk('reclass.jpg', 'recl', {
+      takenAt: '2021-08-09T10:00:00',
+      archive: { status: 'deja_archive', proof: 'md5', key: 'quarantaine/x/reclass.jpg', archivedEtag: md5Hex(Buffer.from('recl')), candidates: ['quarantaine/x/reclass.jpg'], sameNameAndSize: false },
+    }),
+  ];
+  const freshBucket = (): FakeS3 => {
+    const s3 = new FakeS3();
+    s3.createBucket(DEST);
+    s3.put(DEST, 'photos/2020/2020-05/deja.jpg', { size: 4, etag: md5Hex(Buffer.from('deja')) });
+    s3.put(DEST, 'quarantaine/x/reclass.jpg', { size: 4, etag: md5Hex(Buffer.from('recl')) });
+    return s3;
+  };
+  const occupiedOf = (s3: FakeS3) =>
+    archivedObjectsFrom([...s3.buckets.get(DEST)!.entries()].map(([key, o]) => ({ key, size: o.size, etag: o.etag })));
+  // Inventaire antérieur à l'apparition de deja.jpg dans le bucket : le plan l'envoie, l'exécution le trouve déjà présent.
+  const plan = buildArchivePlan(planInput(mediaList, occupiedOf(freshBucket()).filter((o) => o.name !== 'deja.jpg')));
+  expect(plan.violations).toEqual([]);
+  expect(plan.executable).toBe(true);
+  expect(linesToSend(plan)).toHaveLength(7);
+  expect(plan.lines.find((l) => l.path === 'reclass.jpg')!.action).toBe('reclasser_quarantaine');
+  const readMedia = async (line: ArchiveWriteLine): Promise<Buffer> => bodies.get(locationKey(line))!;
+  return { mediaList, plan, readMedia, bodies, freshBucket, occupiedOf };
+}
+
+const snapshot = (s3: FakeS3): [string, number, string][] =>
+  [...s3.buckets.get(DEST)!.entries()].map(([key, o]) => [key, o.size, o.etag] as [string, number, string]).sort(([a], [b]) => a.localeCompare(b));
+
+/** Une passe sur `s3`, avec suivi des dépôts et coupure optionnelle. Les mêmes journal et bucket servent à la relance. */
+function makeRun(s3: FakeS3, journal: MemoryJournal, readMedia: (line: ArchiveWriteLine) => Promise<Buffer>) {
+  const uploads: string[] = [];
+  const overwrites: string[] = [];
+  const run = (plan: TakeoutArchivePlan, cut?: { line: ArchiveWriteLine; point: CutPoint }) => {
+    const real = new S3ArchiveWriter(s3.asClient(), scope(), undefined, THRESHOLDS.multipartThresholdBytes, THRESHOLDS.partSizeBytes);
+    let dead = false;
+    const guard = (): void => {
+      if (dead) throw new Crash('processus mort : plus rien ne part');
+    };
+    const die = (): never => {
+      dead = true;
+      throw new Crash('coupure simulée');
+    };
+    const target = cut?.line.destination;
+    let uploadedTarget = false;
+    let headsOfTarget = 0;
+    const writer: ArchiveWriter = {
+      sourceBucket: real.sourceBucket,
+      sourcePrefixes: real.sourcePrefixes,
+      destinationBucket: real.destinationBucket,
+      checkAccess: () => (guard(), real.checkAccess()),
+      copyFromSource: () => Promise.reject(new Error('jamais de copie serveur dans un archivage Takeout')),
+      listIncompleteMultipartUploads: () => real.listIncompleteMultipartUploads(),
+      headDestination: async (key) => {
+        guard();
+        if (key === target) {
+          headsOfTarget++;
+          if (cut!.point === 'avant-ligne' && headsOfTarget === 1) die();
+          if (cut!.point === 'pendant-verification' && uploadedTarget) die();
+        }
+        return real.headDestination(key);
+      },
+      uploadFile: async (key, body) => {
+        guard();
+        if (key === target && cut!.point === 'apres-journal-avant-depot') die();
+        if (s3.get(DEST, key)) overwrites.push(key);
+        uploads.push(key);
+        await real.uploadFile(key, body);
+        if (key === target) {
+          uploadedTarget = true;
+          if (cut!.point === 'apres-depot-avant-journal') die();
+        }
+      },
+    };
+    const crashJournal: ExecutionJournal = {
+      prepare: (...args) => (guard(), journal.prepare(...args)),
+      findStates: (planId) => journal.findStates(planId),
+      record: (planId, sourceKey, state, message, copyAttempted) => {
+        guard();
+        if (cut?.point === 'avant-journal-copie' && sourceKey === locationKey(cut.line) && state === 'copie') die();
+        journal.record(planId, sourceKey, state, message, copyAttempted);
+      },
+    };
+    return executeArchivePlan(plan, { writer, journal: crashJournal, readMedia, uploadThresholds: THRESHOLDS });
+  };
+  return { run, uploads, overwrites };
+}
+
+describe('executeArchivePlan : reprise après coupure = passe ininterrompue (story 4.4, AC3)', () => {
+  const { plan, readMedia, freshBucket } = equivalenceScenario();
+  const lines = linesToSend(plan);
+
+  const reference = { s3: freshBucket() };
+  beforeAll(async () => {
+    const { run } = makeRun(reference.s3, new MemoryJournal(), readMedia);
+    expect((await run(plan)).stop).toBeNull();
+  });
+
+  const cases: [string, CutPoint, number][] = [];
+  lines.forEach((line, k) => {
+    const points: CutPoint[] =
+      line.path === 'deja.jpg'
+        ? ['avant-ligne'] // jamais déposée : seule une coupure avant la ligne a un sens
+        : ['avant-ligne', 'apres-journal-avant-depot', 'apres-depot-avant-journal', 'pendant-verification', 'avant-journal-copie'];
+    for (const point of points) cases.push([`${line.path} (ligne ${k + 1}/${lines.length})`, point, k]);
+  });
+
+  it.each(cases)('coupure sur %s, point « %s » : relance → bucket et journal identiques, aucun écrasement, aucun renvoi', async (_label, point, k) => {
+    const s3 = freshBucket();
+    const journal = new MemoryJournal();
+    const { run, uploads, overwrites } = makeRun(s3, journal, readMedia);
+    const cutLine = lines[k]!;
+
+    await expect(run(plan, { line: cutLine, point })).rejects.toBeInstanceOf(Crash);
+    const stateAtCut = journal.state(plan.id, locationKey(cutLine));
+    // Ce que le journal sait au moment de la coupure : jamais « copie » avant que le dépôt soit vérifié.
+    expect(stateAtCut).toBe({
+      'avant-ligne': 'a_faire',
+      'apres-journal-avant-depot': 'copie_en_cours',
+      'apres-depot-avant-journal': 'copie_en_cours',
+      'pendant-verification': 'copie_en_cours',
+      'avant-journal-copie': 'copie_en_cours',
+    }[point]);
+
+    const result = await run(plan); // relance : nouveau writer, même bucket, même journal
+    expect(result.stop).toBeNull();
+    expect(result.remaining).toBe(0);
+    expect(snapshot(s3)).toEqual(snapshot(reference.s3));
+    const states = journal.findStates(plan.id);
+    expect(lines.every((l) => isArchiveLineDone(l, states))).toBe(true);
+    expect(overwrites).toEqual([]);
+    // Chaque média à déposer est envoyé exactement une fois sur les deux passes (jamais deux : le dépôt vérifié n'est pas renvoyé).
+    const expectedUploads = lines.filter((l) => l.path !== 'deja.jpg').map((l) => l.destination).sort();
+    expect([...uploads].sort()).toEqual(expectedUploads);
+    if (point === 'apres-depot-avant-journal' || point === 'pendant-verification' || point === 'avant-journal-copie') {
+      expect(result.recovered).toBe(1);
+    }
+  });
+});
+
+describe('replanification après coupure (story 4.4, AC4)', () => {
+  const { mediaList, plan, readMedia, bodies, freshBucket, occupiedOf } = equivalenceScenario();
+  const lines = linesToSend(plan);
+
+  it.each([1, 2, 3, 4, 5, 6])('passe interrompue après %i lignes, inventaire refait, plan régénéré : déposés = déjà archivés, restants aux mêmes destinations, même état final', async (k) => {
+    // Référence : passe ininterrompue.
+    const refS3 = freshBucket();
+    await makeRun(refS3, new MemoryJournal(), readMedia).run(plan);
+
+    // Passe interrompue après k lignes (arrêt demandé entre deux lignes).
+    const s3 = freshBucket();
+    let asked = 0;
+    const shouldStop = (): boolean => ++asked > k;
+    const real = new S3ArchiveWriter(s3.asClient(), scope(), undefined, THRESHOLDS.multipartThresholdBytes, THRESHOLDS.partSizeBytes);
+    const partial = await executeArchivePlan(plan, { writer: real, journal: new MemoryJournal(), readMedia, shouldStop, uploadThresholds: THRESHOLDS });
+    expect(partial.interrupted).toBe(true);
+
+    // Inventaire du bucket refait, plan régénéré (nouvelle empreinte, journal vierge).
+    // Comme en vrai : l'analyse est refaite sur le nouvel inventaire (statut « déjà archivé » des médias déposés, y compris
+    // par preuve d'ETag multipart pour la vidéo), puis le plan régénéré.
+    const inventory = [...s3.buckets.get(DEST)!.entries()].map(([key, o]) => ({ key, size: o.size, lastModified: null, etag: o.etag }));
+    const reanalysed = structuredClone(mediaList);
+    const multipartConfirmed = new Map<string, string[]>();
+    for (const m of reanalysed) {
+      const key = lines.find((l) => l.path === m.path)!.destination;
+      const body = bodies.get(locationKey(m))!;
+      if (body.length > THRESHOLDS.multipartThresholdBytes && s3.get(DEST, key)?.etag === computeMultipartEtag(body, THRESHOLDS.partSizeBytes)) {
+        multipartConfirmed.set(`${m.part}\u0000${m.path}`, [key]); // clé interne de l'analyse
+      }
+    }
+    matchArchive(reanalysed, inventory, multipartConfirmed);
+    const plan2 = buildArchivePlan(planInput(reanalysed, occupiedOf(s3)));
+    expect(plan2.violations).toEqual([]);
+    expect(plan2.executable).toBe(true);
+    expect(plan2.id).not.toBe(plan.id);
+    const byPath = (p: TakeoutArchivePlan, path: string) => p.lines.find((l) => l.path === path)!;
+    lines.forEach((line, i) => {
+      const again = byPath(plan2, line.path);
+      expect(again.destination).toBe(line.destination); // mêmes noms, suffixes Q1 compris
+      if (i < k) expect(again.action).toBe('ignorer_deja_archive');
+      else if (line.path !== 'deja.jpg') expect(again.action).toBe(line.action);
+    });
+
+    const second = makeRun(s3, new MemoryJournal(), readMedia);
+    const result = await second.run(plan2);
+    expect(result.stop).toBeNull();
+    expect(snapshot(s3)).toEqual(snapshot(refS3));
+    expect(second.overwrites).toEqual([]);
   });
 });

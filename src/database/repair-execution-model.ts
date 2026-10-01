@@ -66,12 +66,19 @@ export function isStaleLock(
   return now >= liftableAt(lock) || (lock.host === host && !isAlive(lock.pid));
 }
 
+/** Verrou levé, avec la raison qui a permis la levée (pour le message affiché). */
+export interface LiftedLock extends ExecutionLock {
+  reason: string;
+}
+
 export class ExecutionLockedError extends Error {
   constructor(
     readonly lock: ExecutionLock,
     readonly stale: boolean,
   ) {
-    const lift = `--lever-verrou accepté à partir du ${liftableAt(lock).toISOString()} (${LOCK_IDLE_MINUTES} min sans activité)`;
+    const lift =
+      `--lever-verrou accepté tout de suite si le processus ${lock.pid} n'existe plus sur ce poste (${lock.host}), sinon à partir du ` +
+      `${liftableAt(lock).toISOString()} (${LOCK_IDLE_MINUTES} min sans activité)`;
     super(
       stale
         ? `verrou d'exécution périmé (${describeLock(lock)}) : cette exécution s'est arrêtée sans le libérer. Vérifiez ` +
@@ -189,15 +196,24 @@ export class RepairExecutionModel implements ExecutionJournal {
   }
 
   /**
-   * Levée explicite (`--lever-verrou`) : refusée tant que la dernière activité date de moins de `LOCK_IDLE_MINUTES`,
-   * quels que soient le poste et le processus (un nom d'hôte changeant ou un PID réutilisé ne prouvent rien). Au-delà,
-   * levée même si le PID existe encore sur ce poste (réutilisé) ou si le verrou vient d'un autre poste. Rend le verrou
-   * levé, ou `null` s'il n'y en avait pas.
+   * Levée explicite (`--lever-verrou`). Immédiate si le verrou a été posé sur CE poste par un processus qui n'existe plus
+   * (aucune exécution ne peut tourner depuis ce poste : coupure franche, terminal fermé). Sinon refusée tant que la dernière
+   * activité date de moins de `LOCK_IDLE_MINUTES`, quels que soient le poste et le processus (un nom d'hôte changeant ou un
+   * PID réutilisé ne prouvent rien) ; au-delà, levée même si le PID existe encore sur ce poste (réutilisé) ou si le verrou
+   * vient d'un autre poste. Rend le verrou levé et la raison, ou `null` s'il n'y en avait pas.
+   * Limite assumée (outil local, mono-utilisateur) : un processus vivant dans un autre espace de PID au même nom d'hôte
+   * (terminal d'éditeur en Flatpak, conteneur `--network host`) paraît absent ; ne pas lancer deux exécutions depuis de
+   * tels environnements.
    */
-  forceReleaseLock(now: Date = new Date()): ExecutionLock | null {
+  forceReleaseLock(now: Date = new Date(), isAlive: (pid: number) => boolean = isProcessAlive, host = os.hostname()): LiftedLock | null {
     const lock = this.findLock();
     if (!lock) return null;
-    if (now < liftableAt(lock)) {
+    let reason: string;
+    if (lock.host === host && !isAlive(lock.pid)) {
+      reason = `processus ${lock.pid} absent de ce poste`;
+    } else if (now >= liftableAt(lock)) {
+      reason = `${LOCK_IDLE_MINUTES} min sans activité`;
+    } else {
       // Horodatages de l'horloge système : une activité « dans le futur » signale une horloge reculée (ou un autre poste
       // en avance) ; la levée reste refusée jusqu'à l'échéance, et l'écart est affiché.
       const elapsed = Math.floor((now.getTime() - lock.lastActivityAt.getTime()) / 60_000);
@@ -217,7 +233,7 @@ export class RepairExecutionModel implements ExecutionJournal {
     if (Number(result.changes) !== 1) {
       throw new Error('verrou non levé : il a été repris ou rafraîchi pendant la levée, une exécution tourne. Relancez la commande pour réévaluer');
     }
-    return lock;
+    return { ...lock, reason };
   }
 
   /** `copyAttempted` omis : inchangé. */

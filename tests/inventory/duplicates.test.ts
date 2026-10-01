@@ -312,6 +312,18 @@ describe('resolveNames / disambiguateNames', () => {
     expect(names.get('3')).toBe('IMG_0044_cccccccc.JPG');
   });
 
+  it('variantsCountAsHomonyms (replanification Takeout) : le seul arrivant est suffixé si une variante suffixée du nom est déjà présente', () => {
+    const archive = [{ folder: MONTH, name: 'IMG_0044_bbbbbbbb.JPG', etag: md5('b') }];
+    const arrival = [entry('c', MONTH, 'IMG_0044.JPG', md5('c'))];
+    expect(resolveNames(arrival, archive).names.get('c')).toBe('IMG_0044.JPG'); // comportement général inchangé
+    expect(resolveNames(arrival, archive, true).names.get('c')).toBe('IMG_0044_cccccccc.JPG');
+    // Un nom qui n'est pas un suffixe d'ETag (hexadécimal, multiple de 8) n'est pas une variante.
+    const unrelated = [{ folder: MONTH, name: 'IMG_0044_final.JPG', etag: md5('b') }];
+    expect(resolveNames(arrival, unrelated, true).names.get('c')).toBe('IMG_0044.JPG');
+    // Même contenu déjà présent sous sa variante : toujours « déjà archivé ».
+    expect(resolveNames([entry('b', MONTH, 'IMG_0044.JPG', md5('b'))], archive, true).alreadyArchived.get('b')).toBe(`${MONTH}IMG_0044_bbbbbbbb.JPG`);
+  });
+
   it('passes successives : un nom occupé ne change jamais, seul l\'arrivant est suffixé, même contenu déjà archivé', () => {
     const pass1 = disambiguateNames([entry('a', MONTH, 'IMG_0044.JPG', md5('b'))]);
     expect(pass1.names.get('a')).toBe('IMG_0044.JPG');

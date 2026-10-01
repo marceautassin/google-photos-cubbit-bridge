@@ -232,19 +232,33 @@ describe('gpb reparation executer', () => {
       expect(text()).toMatch('tourne encore');
     });
 
-    it('verrou périmé : refus explicite ; levée refusée tant que l\'activité est récente, puis levée et exécution', async () => {
+    it('verrou d\'un processus disparu de ce poste : refus explicite, puis levée immédiate (story 4.4) et exécution', async () => {
       const plan = seedPlan();
       const lockedAt = new Date('2026-09-15T20:00:00.000Z');
-      new RepairExecutionModel().acquireLock(plan.id, { pid: 2 ** 22 + 12345, host: currentOwner().host }, () => false, lockedAt);
+      const dead = 2 ** 22 + 12345;
+      new RepairExecutionModel().acquireLock(plan.id, { pid: dead, host: currentOwner().host }, () => false, lockedAt);
       const at = (minutes: number): (() => Date) => () => new Date(lockedAt.getTime() + minutes * 60_000);
       expect(await executeCommand(config, { confirmer: plan.id }, { ...deps, now: at(1) })).toBe(1);
       expect(text()).toMatch('verrou d\'exécution périmé');
       expect(text()).toMatch('--lever-verrou');
+      expect(s3.send).not.toHaveBeenCalled();
+      expect(await executeCommand(config, { confirmer: plan.id, leverVerrou: true }, { ...deps, now: at(1) })).toBe(0);
+      expect(text()).toMatch(`Verrou levé (processus ${dead} absent de ce poste)`);
+      expect(new RepairExecutionModel().findLock()).toBeNull();
+    });
+
+    it('verrou d\'un processus vivant : levée refusée tant que l\'activité est récente, puis levée et exécution', async () => {
+      const plan = seedPlan();
+      const lockedAt = new Date('2026-09-15T20:00:00.000Z');
+      const alive = { pid: process.pid, host: currentOwner().host };
+      new RepairExecutionModel().acquireLock(plan.id, alive, () => true, lockedAt);
+      const at = (minutes: number): (() => Date) => () => new Date(lockedAt.getTime() + minutes * 60_000);
       expect(await executeCommand(config, { confirmer: plan.id, leverVerrou: true }, { ...deps, now: at(LOCK_IDLE_MINUTES - 1) })).toBe(1);
       expect(text()).toMatch(`verrou non levé : dernière activité il y a ${LOCK_IDLE_MINUTES - 1} min`);
       expect(s3.send).not.toHaveBeenCalled();
       expect(await executeCommand(config, { confirmer: plan.id, leverVerrou: true }, { ...deps, now: at(LOCK_IDLE_MINUTES) })).toBe(0);
-      expect(text()).toMatch(`Verrou levé : processus ${2 ** 22 + 12345} sur ${currentOwner().host}`);
+      expect(text()).toMatch(`Verrou levé (${LOCK_IDLE_MINUTES} min sans activité)`);
+      expect(text()).toMatch(`processus ${process.pid} sur ${currentOwner().host}`);
       expect(text()).toMatch(`dernière activité le ${lockedAt.toISOString()}`);
       expect(new RepairExecutionModel().findLock()).toBeNull();
     });

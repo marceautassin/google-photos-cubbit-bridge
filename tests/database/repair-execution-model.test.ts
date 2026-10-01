@@ -140,7 +140,8 @@ describe('RepairExecutionModel (journal d\'exécution, migrations 7 et 8)', () =
       expect(error).toBeInstanceOf(ExecutionLockedError);
       expect((error as ExecutionLockedError).stale).toBe(false);
       expect((error as Error).message).toMatch('déjà en cours');
-      expect((error as Error).message).toMatch(`--lever-verrou accepté à partir du ${minutes(LOCK_IDLE_MINUTES).toISOString()}`);
+      expect((error as Error).message).toMatch(`sinon à partir du ${minutes(LOCK_IDLE_MINUTES).toISOString()} (${LOCK_IDLE_MINUTES} min sans activité)`);
+      expect((error as Error).message).toMatch('--lever-verrou accepté tout de suite si le processus 1000 n\'existe plus sur ce poste (poste)');
       journal.releaseLock(other); // un autre processus ne libère pas le verrou d'autrui
       expect(journal.findLock()?.pid).toBe(1000);
       journal.releaseLock(me);
@@ -204,6 +205,39 @@ describe('RepairExecutionModel (journal d\'exécution, migrations 7 et 8)', () =
       expect(isStaleLock(lock, minutes(LOCK_IDLE_MINUTES), () => true, currentOwner().host)).toBe(true);
       expect(journal.forceReleaseLock(minutes(LOCK_IDLE_MINUTES + 30))).toMatchObject(owner);
       expect(journal.findLock()).toBeNull();
+    });
+
+    describe('levée immédiate d\'un verrou laissé par un processus disparu (story 4.4, AC1)', () => {
+      it('même poste, PID mort, activité à l\'instant : levée immédiate, raison « processus absent de ce poste »', () => {
+        const journal = new RepairExecutionModel();
+        journal.acquireLock('plan-1', me, alive([1000]), T0);
+        journal.touchLock(me, minutes(5));
+        const lifted = journal.forceReleaseLock(minutes(5), alive([]), 'poste');
+        expect(lifted).toMatchObject({ pid: 1000, host: 'poste', reason: 'processus 1000 absent de ce poste' });
+        expect(journal.findLock()).toBeNull();
+      });
+
+      it('même poste, PID vivant (réutilisé compris) : refus avant 60 min, levée après avec la raison « sans activité »', () => {
+        const journal = new RepairExecutionModel();
+        journal.acquireLock('plan-1', me, alive([1000]), T0);
+        expect(() => journal.forceReleaseLock(minutes(LOCK_IDLE_MINUTES - 1), alive([1000]), 'poste')).toThrow('verrou non levé');
+        expect(journal.findLock()?.pid).toBe(1000);
+        expect(journal.forceReleaseLock(minutes(LOCK_IDLE_MINUTES), alive([1000]), 'poste')?.reason).toBe(`${LOCK_IDLE_MINUTES} min sans activité`);
+      });
+
+      it('autre poste, activité récente : refus même si le PID n\'existe pas ici (rien ne le prouve)', () => {
+        const journal = new RepairExecutionModel();
+        journal.acquireLock('plan-1', { pid: 1000, host: 'autre-poste' }, alive([]), T0);
+        expect(() => journal.forceReleaseLock(minutes(5), alive([]), 'poste')).toThrow('verrou non levé');
+        expect(journal.findLock()?.pid).toBe(1000);
+      });
+
+      it('acquireLock reste strict : un verrou de processus mort n\'est jamais levé en silence', () => {
+        const journal = new RepairExecutionModel();
+        journal.acquireLock('plan-1', me, alive([1000]), T0);
+        expect(() => journal.acquireLock('plan-1', other, alive([2000]), minutes(1))).toThrow('--lever-verrou');
+        expect(journal.findLock()?.pid).toBe(1000);
+      });
     });
 
     it('seuil de levée dérivé des délais S3, strictement supérieur à la durée maximale d\'une ligne', () => {

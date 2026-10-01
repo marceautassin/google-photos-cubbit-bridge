@@ -22,6 +22,7 @@ import {
   ArchiveExecutionProgress,
   ArchiveWriteLine,
   executeArchivePlan,
+  isArchiveLineDone,
   linesToSend,
 } from '../takeout/archive-execution';
 import { ArchivePlanRefusedError, locationKey, TakeoutArchivePlan, verifyStoredArchivePlan } from '../takeout/archive-plan';
@@ -32,12 +33,13 @@ import { describeError, formatBytes, formatNumber } from '../utils/format';
 import { getLogger } from '../utils/logger';
 import { ArchivePlanContext, readArchivePlanInput } from './takeout-plan';
 import { defaultSources, ORIGIN_LABELS, PHASE_LABELS, progressPrinter, selectGroups, TakeoutSources } from './takeout';
+import { installStopHandlers, liftLock } from './execution-control';
 import { runCommand } from './run-command';
 
 /**
  * `gpb takeout archiver` (story 4.3) : envoi des médias `envoyer`/`reclasser_quarantaine`/`quarantaine` du plan
  * d'archivage enregistré (gpb takeout planifier), par le seul point d'accès en écriture (`S3ArchiveWriter.uploadFile`).
- * Sans `--confirmer`, simulation : résumé affiché, aucun client S3 créé, rien d'écrit. Relançable (prépare la 4.4).
+ * Sans `--confirmer`, simulation : résumé affiché, aucun client S3 créé, rien d'écrit. Relançable après toute coupure (story 4.4).
  */
 
 export interface ArchiverOptions {
@@ -71,7 +73,8 @@ export function register(takeoutCmd: Command, config: AppConfig, sources: Takeou
     .option(
       '--lever-verrou',
       `Lever le verrou global d'exécution (partagé avec « gpb reparation executer » : une seule passe d'écriture à la fois) d'une exécution ` +
-        `arrêtée sans le libérer (refusé si sa dernière activité date de moins de ${LOCK_IDLE_MINUTES} min)`,
+        `arrêtée sans le libérer. Immédiat si le processus qui le détient n'existe plus sur ce poste (coupure, extinction) ; ` +
+        `sinon refusé si sa dernière activité date de moins de ${LOCK_IDLE_MINUTES} min`,
     )
     .action((options: ArchiverOptions) =>
       runCommand('Archivage Takeout :', async () => {
@@ -112,24 +115,16 @@ export async function archiverCommand(config: AppConfig, sources: TakeoutSources
   const now = deps.now ?? ((): Date => new Date());
   const journal = new RepairExecutionModel();
   if (options.leverVerrou) {
-    let lifted;
     try {
-      lifted = journal.forceReleaseLock(now());
+      liftLock(journal, now());
     } catch (error) {
       return refuse(error instanceof Error ? error.message : String(error));
     }
-    console.log(
-      lifted
-        ? chalk.yellow(
-            `🔓 Verrou levé : plan ${lifted.planId}, processus ${lifted.pid} sur ${lifted.host}, pris le ${lifted.acquiredAt.toISOString()}\n`,
-          )
-        : chalk.gray('   Aucun verrou d\'exécution à lever.\n'),
-    );
   }
 
   const toSend = linesToSend(plan);
   const states = journal.findStates(plan.id);
-  const remaining = toSend.filter((l) => (states.get(locationKey(l))?.state ?? 'a_faire') !== 'copie' && states.get(locationKey(l))?.state !== 'deja_present');
+  const remaining = toSend.filter((l) => !isArchiveLineDone(l, states));
   console.log(`   Plan : ${chalk.white(plan.id)} (export ${plan.exportId})`);
   console.log(`   Bucket dédié : ${plan.destinationBucket}`);
   console.log(`   À déposer (envois + reclassements + quarantaine) : ${volume({ count: toSend.length, size: toSend.reduce((s, l) => s + l.size, 0) })}`);
@@ -161,32 +156,25 @@ export async function archiverCommand(config: AppConfig, sources: TakeoutSources
     throw error;
   }
 
+  // Gestionnaires posés dès la prise du verrou : la préparation des zips (téléchargement, revérification) peut être
+  // longue, et un signal pendant cette phase ne doit pas laisser le verrou posé.
+  const stop = installStopHandlers('du média', () => journal.releaseLock(owner));
   let readMedia: (line: ArchiveWriteLine) => Promise<Buffer>;
   try {
     readMedia = await buildMediaReader(config, sources, plan, options.dossier);
   } catch (error) {
+    stop.dispose();
     journal.releaseLock(owner);
     return refuse(error instanceof Error ? error.message : String(error));
   }
 
-  let stopRequested = false;
-  const onSigint = (): void => {
-    if (stopRequested) {
-      journal.releaseLock(owner);
-      process.stdout.write('\n');
-      process.exit(130);
-    }
-    stopRequested = true;
-    process.stdout.write(chalk.yellow('\n⏸️  Arrêt demandé : fin du média en cours (envoi et vérification), puis arrêt. Ctrl-C à nouveau pour quitter.\n'));
-  };
-  process.on('SIGINT', onSigint);
   let result: ArchiveExecutionResult;
   try {
     result = await executeArchivePlan(plan, {
       writer,
       journal,
       readMedia,
-      shouldStop: () => stopRequested,
+      shouldStop: stop.stopRequested,
       keepAlive: () => journal.touchLock(owner, now()),
       onProgress: displayProgress,
     });
@@ -194,7 +182,7 @@ export async function archiverCommand(config: AppConfig, sources: TakeoutSources
     if (error instanceof ArchiveExecutionRefusedError) return refuse(error.message);
     throw error;
   } finally {
-    process.off('SIGINT', onSigint);
+    stop.dispose();
     journal.releaseLock(owner);
   }
 

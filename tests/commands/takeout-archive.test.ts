@@ -18,7 +18,7 @@ import { listBackupZips, TakeoutSources } from '../../src/commands/takeout';
 import { archiverCommand, ArchiverDeps } from '../../src/commands/takeout-archive';
 import { closeDatabase, initDatabase } from '../../src/database/connection';
 import { InventoryModel } from '../../src/database/inventory-model';
-import { LOCK_IDLE_MINUTES, RepairExecutionModel } from '../../src/database/repair-execution-model';
+import { currentOwner, LOCK_IDLE_MINUTES, RepairExecutionModel } from '../../src/database/repair-execution-model';
 import { TakeoutAnalysisModel } from '../../src/database/takeout-analysis-model';
 import { TakeoutPlanModel } from '../../src/database/takeout-plan-model';
 import { buildArchivePlan, locationKey, TakeoutPlanInput } from '../../src/takeout/archive-plan';
@@ -215,8 +215,62 @@ describe('gpb takeout archiver', () => {
 
     const code = await archiverCommand(testConfig, sources, { export: '20260806T062636Z', confirmer: planId, leverVerrou: true }, { ...deps, now: () => idleAt });
     expect(code).toBe(0);
-    expect(out.join('\n')).toContain('Verrou levé : plan un-autre-plan-en-cours');
+    expect(out.join('\n')).toContain(`Verrou levé (${LOCK_IDLE_MINUTES} min sans activité) : plan un-autre-plan-en-cours`);
     expect(journal.findLock()).toBeNull();
+  });
+
+  describe('reprise après coupure franche (story 4.4)', () => {
+    const DEAD_PID = 2 ** 22 + 99999; // hors plage : jamais un processus vivant
+    const acquiredAt = new Date('2026-01-01T00:00:00.000Z');
+    const justAfter = (): Date => new Date(acquiredAt.getTime() + 2 * 60_000);
+
+    it('verrou d\'un processus disparu sur ce poste : refus sans --lever-verrou (avec la piste), levée immédiate avec', async () => {
+      const planId = await seedPlan();
+      const journal = new RepairExecutionModel();
+      journal.acquireLock('plan-coupe', { pid: DEAD_PID, host: currentOwner().host }, () => false, acquiredAt);
+      const base = { export: '20260806T062636Z', confirmer: planId };
+
+      expect(await archiverCommand(testConfig, sources, base, { ...deps, now: justAfter })).toBe(1);
+      expect(out.join('\n')).toContain('verrou d\'exécution périmé');
+      expect(out.join('\n')).toContain(`accepté tout de suite si le processus ${DEAD_PID} n'existe plus sur ce poste`);
+      expect(journal.findLock()?.pid).toBe(DEAD_PID); // jamais levé en silence
+      expect(s3.send).not.toHaveBeenCalled();
+
+      out.length = 0;
+      expect(await archiverCommand(testConfig, sources, { ...base, leverVerrou: true }, { ...deps, now: justAfter })).toBe(0);
+      expect(out.join('\n')).toContain(`Verrou levé (processus ${DEAD_PID} absent de ce poste)`);
+      expect(s3.get(DEST, DESTINATION_KEY)).toEqual({ size: PHOTO.length, etag: md5Hex(PHOTO) });
+      expect(journal.findLock()).toBeNull();
+    });
+
+    it('verrou d\'un processus vivant (PID réutilisé compris) ou d\'un autre poste, activité récente : levée refusée', async () => {
+      const planId = await seedPlan();
+      const journal = new RepairExecutionModel();
+      for (const owner of [{ pid: process.pid, host: currentOwner().host }, { pid: DEAD_PID, host: 'autre-poste' }]) {
+        journal.acquireLock('plan-coupe', owner, () => true, acquiredAt);
+        out.length = 0;
+        const code = await archiverCommand(testConfig, sources, { export: '20260806T062636Z', confirmer: planId, leverVerrou: true }, { ...deps, now: justAfter });
+        expect(code).toBe(1);
+        expect(out.join('\n')).toContain('verrou non levé : dernière activité il y a 2 min');
+        expect(journal.findLock()?.pid).toBe(owner.pid);
+        journal.releaseLock(owner);
+      }
+      expect(s3.send).not.toHaveBeenCalled();
+    });
+
+    it.each(['SIGINT', 'SIGTERM', 'SIGHUP'] as const)('%s en cours d\'envoi : le média en cours finit, verrou libéré, gestionnaires retirés', async (signal) => {
+      const planId = await seedPlan();
+      const before = (['SIGINT', 'SIGTERM', 'SIGHUP'] as const).map((sig) => process.listenerCount(sig));
+      const written: string[] = [];
+      jest.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => (written.push(String(chunk)), true));
+      s3.afterUpload = () => void process.emit(signal);
+      const code = await archiverCommand(testConfig, sources, { export: '20260806T062636Z', confirmer: planId }, deps);
+      expect(code).toBe(0); // un seul média : fini avant l'arrêt
+      expect(written.join('')).toContain('Arrêt demandé');
+      expect(s3.get(DEST, DESTINATION_KEY)).toEqual({ size: PHOTO.length, etag: md5Hex(PHOTO) });
+      expect(new RepairExecutionModel().findLock()).toBeNull();
+      expect((['SIGINT', 'SIGTERM', 'SIGHUP'] as const).map((sig) => process.listenerCount(sig))).toEqual(before);
+    });
   });
 
   it('dépôt multipart inachevé (d\'une exécution antérieure, panne réseau) sur le bucket dédié : signalé dans le bilan, jamais purgé (story 4.3, correction)', async () => {

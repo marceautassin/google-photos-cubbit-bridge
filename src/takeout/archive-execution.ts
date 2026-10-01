@@ -25,12 +25,14 @@ import { locationKey, TakeoutArchivePlan, TakeoutPlanLine } from './archive-plan
  * recalculé sur le contenu déposé avec notre propre taille de partie, qui est connue — contrairement à la source en
  * 3.1/3.2 — puis comparé à l'ETag renvoyé). Premier incident → arrêt. Aucune suppression.
  *
- * Reprise (prépare la story 4.4, sans la sur-construire) : avant l'envoi, la ligne est journalisée `copie_en_cours`
- * (dépôt tenté). À la relance, une ligne dans cet état est acceptée si l'objet présent est un dépôt vérifié
- * (`isVerifiedUpload`) ; sinon, à examiner (jamais réécrasé). Limite documentée : un envoi interrompu EN COURS d'un
- * dépôt multipart repart de zéro pour cette ligne (aucune reprise partie par partie) — acceptable ici, à affiner par
- * la 4.4 si Marceau le juge utile en pratique.
- */
+ * Reprise (story 4.4) : avant l'envoi, la ligne est journalisée `copie_en_cours` (dépôt tenté). La passe est relançable
+ * après n'importe quelle coupure (Ctrl-C, SIGTERM/SIGHUP, extinction, `kill -9`) : les lignes `copie` / `deja_present` du
+ * journal sont sautées ; une ligne `copie_en_cours` dont l'objet est présent est acceptée si c'est un dépôt vérifié
+ * (`isVerifiedUpload`, comptée « reprise vérifiée », jamais renvoyée), sinon arrêt « à examiner » ; une ligne dont l'objet
+ * est absent est (re)déposée ; une ligne `echec` est retentée. Jamais d'écrasement, quel que soit le point de coupure.
+ * Limite documentée : un envoi interrompu EN COURS d'un dépôt multipart (média au-delà de `MULTIPART_UPLOAD_THRESHOLD_BYTES`,
+ * 200 Mio, qu'aucun média de l'export n'atteint) repart de zéro pour cette ligne, sans reprise partie par partie ; les
+ * parties orphelines sont signalées par le bilan, jamais abandonnées par l'outil. */
 
 /** Ligne qui donne lieu à un envoi. */
 export type ArchiveWriteLine = TakeoutPlanLine & { destination: string };
