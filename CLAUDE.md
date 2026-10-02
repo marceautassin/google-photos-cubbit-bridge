@@ -37,20 +37,20 @@ plateforme. Une abstraction SOLID qui complique la lecture n'a pas sa place ici.
 ```
 src/
 ├── index.ts        # Point d'entrée CLI
-├── commands/       # Commandes CLI (setup, takeout, sync, archive, status, list, auth)
-├── takeout/        # Parsing des archives Google Takeout
+├── commands/       # Commandes CLI (takeout, inventory, plan, reparation, etat, status, setup ; sync/resume/archive désactivées)
+├── takeout/        # Lecture, analyse, plan d'archivage et attestation des exports Google Takeout
+├── inventory/      # Inventaire du bucket, datation, doublons, plan et rapport de réparation
 ├── clients/        # Client Cubbit (S3) + types partagés
-├── database/       # SQLite : suivi des états de synchronisation
+├── database/       # SQLite : inventaire, analyses, plans, journal d'exécution
 ├── config/         # Chargement et typage de la configuration
-├── auth/           # OAuth2 Google (hérité, en cours de dépréciation)
-└── utils/          # Logging, crypto, fichiers, scanners Takeout
+└── utils/          # Logging, formats, fichiers
 ```
 
 **Note historique :** le projet visait initialement la Google Photos Library API.
 Google en a fermé l'accès en lecture à la bibliothèque complète — le projet a pivoté
-vers l'ingestion d'archives **Google Takeout**. Le code `src/auth/` et
-`src/clients/google-photos.ts` est un reliquat de cette première approche. Le `README.md`
-décrit encore l'ancien fonctionnement et n'est pas à jour.
+vers l'ingestion d'archives **Google Takeout**. Le code de cette première approche
+(`src/auth/`, `src/clients/google-photos.ts`) a été supprimé (story 1.2). Le `README.md`,
+le `QUICKSTART.md` et `docs/RUNBOOK.md` décrivent l'outil réel (epic 5).
 
 ## Planification
 
