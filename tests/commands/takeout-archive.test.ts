@@ -286,7 +286,7 @@ describe('gpb takeout archiver', () => {
     expect(code).toBe(0);
     expect(out.join('\n')).toContain('1');
     expect(out.join('\n')).toMatch(/dépôt\(s\) multipart inachevé\(s\) sur marceau-photos/);
-    expect(out.join('\n')).toContain('AbortIncompleteMultipartUpload');
+    expect(out.join('\n')).toContain('abort-multipart-upload');
     expect(s3.commandNames().includes('AbortMultipartUploadCommand')).toBe(false); // NFC-1 : jamais purgé par cet outil
   });
 });

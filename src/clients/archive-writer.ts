@@ -230,8 +230,8 @@ export class S3ArchiveWriter implements ArchiveWriter {
     // `CompleteMultipartUpload` n'a pas réussi, et n'écrasent donc jamais d'objet existant. Ce module n'ajoute
     // volontairement pas de commande d'abandon du dépôt en plusieurs parties : ce serait la seule commande de
     // suppression du point d'accès, contraire à sa garantie « aucune suppression ». Signalé (lecture seule,
-    // `listIncompleteMultipartUploads`) à l'appelant, jamais purgé ici : Marceau doit poser côté Cubbit une règle de
-    // cycle de vie (`AbortIncompleteMultipartUpload`) pour que ces parties facturées ne s'accumulent pas.
+    // `listIncompleteMultipartUploads`) à l'appelant, jamais purgé ici : Cubbit n'offrant pas de règle de cycle de vie
+    // `AbortIncompleteMultipartUpload`, Marceau les purge à la main (docs/RUNBOOK.md).
     const uploadId = await this.startMultipartUpload(destinationKey);
     const parts = await this.uploadParts(destinationKey, uploadId, body);
     await this.client.send(

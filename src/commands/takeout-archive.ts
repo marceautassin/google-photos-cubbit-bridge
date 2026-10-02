@@ -243,7 +243,7 @@ function displayResult(plan: TakeoutArchivePlan, result: ArchiveExecutionResult,
     console.log(
       chalk.yellow(
         `\n⚠️  ${chalk.white(formatNumber(incompleteMultipartUploads.length))} dépôt(s) multipart inachevé(s) sur ${plan.destinationBucket} — ` +
-          'à purger côté Cubbit (règle de cycle de vie AbortIncompleteMultipartUpload). Jamais abandonnés par cet outil (NFC-1).',
+          'à purger à la main (aws s3api list-multipart-uploads puis abort-multipart-upload, voir docs/RUNBOOK.md) : Cubbit n\'a pas de règle de cycle de vie qui le fasse. Jamais abandonnés par cet outil (NFR-1).',
       ),
     );
   }

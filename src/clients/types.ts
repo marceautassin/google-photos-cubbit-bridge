@@ -99,8 +99,8 @@ export interface DestinationObject {
 /**
  * Dépôt en plusieurs parties commencé et jamais terminé ni interrompu proprement (story 4.3, correction) : ses
  * parties sont facturées côté Cubbit mais invisibles de l'outil (aucun objet servi avant que le dépôt entier ne soit
- * validé). Lecture seule, jamais nettoyé par ce module (NFC-1) : à purger côté Cubbit par une règle de cycle de vie
- * dédiée aux dépôts multipart inachevés.
+ * validé). Lecture seule, jamais nettoyé par ce module (NFR-1) : à purger à la main (Cubbit n'a pas de règle de cycle
+ * de vie `AbortIncompleteMultipartUpload`), voir docs/RUNBOOK.md.
  */
 export interface IncompleteMultipartUpload {
   key: string;
@@ -130,7 +130,7 @@ export interface ArchiveWriter {
   uploadFile(destinationKey: string, body: Buffer): Promise<void>;
   /**
    * Dépôts multipart inachevés sur le bucket dédié (story 4.3, correction), lecture seule (`ListMultipartUploads`) :
-   * signalés à l'appelant pour information (résumé d'`archiver`), jamais abandonnés ici (aucune suppression, NFC-1).
+   * signalés à l'appelant pour information (résumé d'`archiver`), jamais abandonnés ici (aucune suppression, NFR-1).
    */
   listIncompleteMultipartUploads(): Promise<IncompleteMultipartUpload[]>;
 }

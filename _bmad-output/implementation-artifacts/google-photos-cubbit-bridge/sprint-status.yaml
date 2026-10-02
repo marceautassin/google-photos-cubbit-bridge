@@ -76,7 +76,7 @@ development_status:
   4-5-attester-que-tout-est-bien-sauvegarde-avant-que-je-supprime: done
   epic-4-retrospective: optional
 
-  epic-5: backlog
-  5-1-rediger-le-runbook-du-cycle-complet: backlog
-  5-2-reecrire-le-readme-et-le-quickstart: backlog
+  epic-5: in-progress
+  5-1-rediger-le-runbook-du-cycle-complet: done
+  5-2-reecrire-le-readme-et-le-quickstart: in-progress
   epic-5-retrospective: optional
