@@ -80,7 +80,7 @@ development_status:
   5-1-rediger-le-runbook-du-cycle-complet: done
   5-2-reecrire-le-readme-et-le-quickstart: done
   epic-5-retrospective: optional
-  epic-6: in-progress
+  epic-6: done
   6-1-retirer-le-code-mort-de-l-ancienne-synchronisation: done
-  6-2-reecrire-l-auteur-des-commits-et-publier: backlog
+  6-2-reecrire-l-auteur-des-commits-et-publier: done
   epic-6-retrospective: optional
