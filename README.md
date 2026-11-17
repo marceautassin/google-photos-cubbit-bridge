@@ -105,15 +105,6 @@ La réparation de l'ancienne archive est terminée (2026-09) ; ces commandes res
 | Commande | Rôle |
 |---|---|
 | `gpb setup` | Saisie interactive de la configuration Cubbit, écrite dans `config/config.json` |
-| `gpb status`, `gpb history` | Statut et historique des anciennes synchronisations |
-
-### Commandes désactivées
-
-Elles restent visibles dans l'aide, marquées `(désactivée)`, refusent avec un message et le code de sortie `1`, et
-n'envoient ni ne lisent rien :
-
-`gpb sync`, `gpb resume`, `gpb archive`, `gpb takeout import`, `gpb takeout list`, `gpb takeout validate`
-(remplacée par `gpb takeout valider`).
 
 ## Pourquoi pas l'API Google Photos
 

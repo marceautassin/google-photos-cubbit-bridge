@@ -14,7 +14,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { BucketLister, BucketObjectPage, DownloadedObject, ObjectDownloader } from '../../src/clients/types';
-import { LEGACY_MESSAGE, listBackupZips, register, TakeoutSources } from '../../src/commands/takeout';
+import { listBackupZips, register, TakeoutSources } from '../../src/commands/takeout';
 import { closeDatabase, initDatabase } from '../../src/database/connection';
 import { InventoryModel } from '../../src/database/inventory-model';
 import { TakeoutAnalysisModel } from '../../src/database/takeout-analysis-model';
@@ -197,20 +197,6 @@ describe('gpb takeout', () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
-  });
-
-  it.each([
-    [['takeout', 'import', '/chemin/Takeout', '--force']],
-    [['takeout', 'list', '/chemin/Takeout', '--albums']],
-    [['takeout', 'validate', '/chemin/Takeout']],
-    [['archive', 'extract', 'takeout.zip', '--output', '/tmp/x']],
-  ])('ancienne commande %j : refus explicite, code 1, rien lu', async (args) => {
-    const { sources, reader } = sourcesFor({ 'backups/takeout-20260806T062636Z-1-001.zip': PART });
-    await run(args, sources);
-    expect(process.exitCode).toBe(1);
-    expect(errors.join('\n')).toContain(`gpb ${args[0] === 'archive' ? 'archive' : `takeout ${args[1]}`} : ${LEGACY_MESSAGE}`);
-    expect(reader.calls).toEqual([]);
-    expect(S3Client).not.toHaveBeenCalled();
   });
 
   it('listBackupZips : seuls les .zip de backups/, emplacement et taille issus du listing', async () => {

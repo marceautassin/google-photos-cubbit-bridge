@@ -16,8 +16,7 @@ import {
   initDatabase,
   MIGRATIONS,
 } from '../../src/database/connection';
-import { AppMetadataModel, SyncRecordModel, SyncSessionModel } from '../../src/database/models';
-import { SyncStatus } from '../../src/clients/types';
+import { AppMetadataModel } from '../../src/database/models';
 
 describe('couche base de données (node:sqlite)', () => {
   let dir: string;
@@ -54,49 +53,32 @@ describe('couche base de données (node:sqlite)', () => {
     expect(row.n).toBe(12);
   });
 
-  it('crée, relit et met à jour un enregistrement avec champs optionnels absents', async () => {
-    const model = new SyncRecordModel();
-    const id = await model.create({
-      googlePhotoId: 'id-1',
-      filename: 'IMG_0001.JPG',
-      googleUrl: '',
-      cubbitPath: '2024/01/IMG_0001.JPG',
-      fileSize: 1234,
-      mimeType: 'image/jpeg',
-      createdDate: new Date('2024-01-15T10:00:00Z'),
-      status: SyncStatus.PENDING,
-      metadata: { source: 'test' },
-    });
-    expect(typeof id).toBe('number');
+  it('ouvre sans les toucher une base créée avant la story 6.1 (tables héritées sync_* encore présentes)', async () => {
+    getDatabase().exec(`
+      CREATE TABLE sync_records (id INTEGER PRIMARY KEY, google_photo_id TEXT);
+      CREATE TABLE sync_sessions (id TEXT PRIMARY KEY);
+      INSERT INTO sync_records (google_photo_id) VALUES ('ancien');
+      INSERT INTO sync_sessions (id) VALUES ('session');
+    `);
+    closeDatabase();
 
-    await model.update(id, { status: SyncStatus.SYNCED, syncDate: new Date('2024-02-01T00:00:00Z') });
+    await initDatabase({ path: dbPath });
 
-    const record = await model.findByGooglePhotoId('id-1');
-    expect(record?.status).toBe(SyncStatus.SYNCED);
-    expect(record?.syncDate?.toISOString()).toBe('2024-02-01T00:00:00.000Z');
-    expect(record?.metadata).toEqual({ source: 'test' });
-    expect(await model.countByStatus(SyncStatus.SYNCED)).toBe(1);
+    const database = getDatabase();
+    const count = (table: string): number => (database.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+    expect(count('schema_version')).toBe(12);
+    expect(count('sync_records')).toBe(1);
+    expect(count('sync_sessions')).toBe(1);
   });
 
-  it('gère sessions et métadonnées', async () => {
-    const sessions = new SyncSessionModel();
-    const id = await sessions.create({
-      startTime: new Date(),
-      status: 'running',
-      filesProcessed: 0,
-      filesSuccess: 0,
-      filesError: 0,
-      totalSize: 0,
-    });
-    expect((await sessions.findLast())?.id).toBe(id);
+  it('ne crée plus les tables héritées sync_* sur une base neuve', () => {
+    const rows = getDatabase()
+      .prepare("SELECT name FROM sqlite_master WHERE tbl_name LIKE 'sync\\_%' ESCAPE '\\'")
+      .all();
+    expect(rows).toEqual([]);
+  });
 
-    const endTime = new Date('2026-01-02T03:04:05.000Z');
-    await sessions.update(id, { status: 'completed', endTime, filesProcessed: 3 });
-    const updated = await sessions.findById(id);
-    expect(updated?.status).toBe('completed');
-    expect(updated?.endTime?.toISOString()).toBe(endTime.toISOString());
-    expect(updated?.filesProcessed).toBe(3);
-
+  it('gère les métadonnées', async () => {
     const meta = new AppMetadataModel();
     await meta.set('cle', 'valeur');
     expect(await meta.get('cle')).toBe('valeur');

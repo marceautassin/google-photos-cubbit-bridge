@@ -30,7 +30,6 @@ import { ensureLocalZip, LocalZip, VERIFICATION_LABELS, ZipProgress } from '../t
 import { formatBytes, formatNumber } from '../utils/format';
 import { checkTimeZone } from '../utils/local-date-time';
 import { partSizeLabel } from '../utils/multipart-etag';
-import { registerDisabledCommand } from './disabled-command';
 import { requireValidConfig } from './inventory';
 import { runCommand } from './run-command';
 import { register as registerArchiver } from './takeout-archive';
@@ -40,7 +39,7 @@ import { register as registerPlanifier } from './takeout-plan';
 /**
  * `gpb takeout valider` (story 4.1) : valide les exports Takeout avant traitement en lisant la seule table des matières
  * de chaque zip, par lectures partielles. Lecture seule : listing du bucket dédié et GET partiels, rien n'est écrit, ni
- * dans un bucket ni en base. Les anciennes sous-commandes (ancien format Takeout extrait localement) sont désactivées.
+ * dans un bucket ni en base.
  *
  * `gpb takeout analyser` (story 4.2) : télécharge localement et vérifie les zips d'un export validé, puis identifie
  * (MD5 du contenu) et date chaque média, détecte les doublons internes et ce qui est déjà archivé d'après l'inventaire
@@ -52,10 +51,6 @@ export const DEFAULT_TIME_ZONE = 'Europe/Paris';
 
 /** Emplacement des exports Takeout dans le bucket dédié (exemplaires uniques, jamais écrits). */
 export const BACKUPS_PREFIX = 'backups/';
-
-export const LEGACY_MESSAGE =
-  'désactivée : elle lisait un ancien format Takeout que Google ne produit plus. Validez un export avec ' +
-  '« gpb takeout valider » ; l\'archivage sera reconstruit sur le point d\'accès en écriture (epic 4). Rien n\'a été lu ni envoyé.';
 
 interface ValiderOptions {
   export?: string;
@@ -113,15 +108,6 @@ export function register(program: Command, config: AppConfig, sources: TakeoutSo
   registerPlanifier(takeoutCmd, config, sources);
   registerArchiver(takeoutCmd, config, sources);
   registerAttester(takeoutCmd, config, sources);
-
-  for (const [name, description] of [
-    ['import', 'Importer un export Takeout extrait (ancien format)'],
-    ['list', 'Lister un export Takeout extrait (ancien format)'],
-    ['validate', 'Valider un export Takeout extrait (ancien format), remplacée par « valider »'],
-  ] as const) {
-    registerDisabledCommand(takeoutCmd, name, description, LEGACY_MESSAGE);
-  }
-  registerDisabledCommand(program, 'archive', 'Extraire des archives Takeout localement (ancien format)', LEGACY_MESSAGE);
 }
 
 /** Zips de `backups/` du bucket, taille connue par le listing exhaustif, lus par GET partiels. */

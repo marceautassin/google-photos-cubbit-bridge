@@ -37,7 +37,7 @@ plateforme. Une abstraction SOLID qui complique la lecture n'a pas sa place ici.
 ```
 src/
 ├── index.ts        # Point d'entrée CLI
-├── commands/       # Commandes CLI (takeout, inventory, plan, reparation, etat, status, setup ; sync/resume/archive désactivées)
+├── commands/       # Commandes CLI (takeout, inventory, plan, reparation, etat, setup)
 ├── takeout/        # Lecture, analyse, plan d'archivage et attestation des exports Google Takeout
 ├── inventory/      # Inventaire du bucket, datation, doublons, plan et rapport de réparation
 ├── clients/        # Client Cubbit (S3) + types partagés

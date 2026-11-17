@@ -1,5 +1,5 @@
 # generated: 2026-09-14
-# last_updated: 2026-10-01
+# last_updated: 2026-11-17
 # project: google-photos-cubbit-bridge
 # project_key: NOKEY
 # tracking_system: file-system
@@ -41,7 +41,7 @@
 # - Retrospective appends its action items to action_items; sprint-status surfaces open ones
 
 generated: 2026-09-14
-last_updated: 2026-10-01
+last_updated: 2026-11-17
 project: google-photos-cubbit-bridge
 project_key: NOKEY
 tracking_system: file-system
@@ -80,3 +80,7 @@ development_status:
   5-1-rediger-le-runbook-du-cycle-complet: done
   5-2-reecrire-le-readme-et-le-quickstart: done
   epic-5-retrospective: optional
+  epic-6: in-progress
+  6-1-retirer-le-code-mort-de-l-ancienne-synchronisation: done
+  6-2-reecrire-l-auteur-des-commits-et-publier: backlog
+  epic-6-retrospective: optional

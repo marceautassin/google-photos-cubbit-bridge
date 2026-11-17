@@ -93,7 +93,7 @@ async function setupCommand(options: { reset?: boolean }): Promise<void> {
     if (errors.length === 0) {
       console.log(chalk.blue('📋 Prochaines étapes:'));
       console.log('  1. Validez vos exports Takeout avec ' + chalk.cyan('gpb takeout valider'));
-      console.log('  2. L\'archivage des nouveaux exports sera reconstruit en epic 4 (gpb sync est désactivée)');
+      console.log('  2. Suivez ensuite le cycle complet décrit dans ' + chalk.cyan('docs/RUNBOOK.md'));
     } else {
       console.log(chalk.yellow('⚠️  Corrigez les erreurs de configuration avant de continuer.'));
     }

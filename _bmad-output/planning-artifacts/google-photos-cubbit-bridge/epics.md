@@ -213,6 +213,13 @@ le code. Le runbook décrit la procédure de bout en bout ; le README et le QUIC
 décrire un outil qui n'existe plus.
 **FRs couvertes :** FR-19, FR-20
 
+### Epic 6 : Préparer la publication
+
+Le dépôt passe en public sur GitHub pour être montré. Le code mort de l'ancienne
+synchronisation disparaît, aucune donnée personnelle sensible ne reste dans les fichiers ni
+dans les métadonnées des commits.
+**FRs couvertes :** aucune (hygiène du dépôt, ajoutée le 2026-11-17)
+
 ---
 
 ## Epic 1 : Reprendre la main sur l'outil
@@ -764,3 +771,46 @@ afin de ne plus être induit en erreur par des commandes qui n'existent plus.
 **Étant donné** la documentation réécrite
 **Quand** je la parcours
 **Alors** elle est en français et renvoie au runbook pour la procédure complète
+
+## Epic 6 : Préparer la publication
+
+Le dépôt passe en public sur GitHub pour être montré, sans code mort ni donnée personnelle sensible.
+
+### Story 6.1 : Retirer le code mort de l'ancienne synchronisation
+
+En tant que Marceau,
+je veux que le dépôt ne contienne plus que l'outil réel,
+afin qu'un lecteur de mon GitHub ne bute pas sur des commandes et des tables qui ne servent plus.
+
+**Acceptance Criteria :**
+
+**Étant donné** l'aide de la CLI
+**Quand** je la consulte
+**Alors** `status`, `history`, `sync`, `resume`, `archive` et `takeout import|list|validate` n'y figurent plus
+**Et** `gpb etat` reste la commande d'état de l'archive
+
+**Étant donné** le code et la base SQLite
+**Quand** l'outil démarre sur une base neuve
+**Alors** les tables `sync_records` et `sync_sessions` ne sont plus créées, et les types `SyncRecord`/`SyncSession`/`SyncStatus` n'existent plus
+**Et** une base existante qui contient ces tables fonctionne sans erreur, sans qu'elles soient supprimées
+
+**Étant donné** les fichiers d'exemple de configuration
+**Quand** je les lis
+**Alors** ils ne contiennent que des placeholders, et `config/config.json.backup` a disparu
+
+### Story 6.2 : Réécrire l'auteur des commits et publier
+
+En tant que Marceau,
+je veux que l'historique public porte mon adresse personnelle,
+afin de ne pas exposer mon adresse professionnelle.
+
+**Acceptance Criteria :**
+
+**Étant donné** l'historique réécrit
+**Quand** je liste les auteurs et committers
+**Alors** une seule adresse apparaît : `marceau@damxp.fr`
+**Et** l'arbre de chaque commit est identique à l'original (seules les métadonnées changent)
+
+**Étant donné** la réécriture validée
+**Quand** Marceau pousse en `--force` puis passe le dépôt en public
+**Alors** GitHub n'expose plus l'adresse professionnelle

@@ -86,6 +86,11 @@ export function inTransaction<T>(database: DatabaseSync, work: () => T): T {
  * jamais rejouées, la colonne ajoutée n'existait pas sur cette base → échec en exécution réelle. Corrigé : la
  * migration 10 est revenue à sa forme d'origine, la colonne est ajoutée par la migration 12 (`sql` ou `run`, cf.
  * `MigrationDef`), qui vérifie sa propre applicabilité par `PRAGMA table_info` au lieu de supposer l'état de la table.
+ *
+ * Seule exception, assumée (story 6.1) : les migrations 1 à 3 ont été amputées des tables, index et trigger de
+ * l'ancienne synchronisation (`sync_records`, `sync_sessions`). C'est un retrait pur : une base neuve ne les crée plus,
+ * une base existante les garde telles quelles (aucun DROP, aucune migration rejouée). Les deux schémas diffèrent donc
+ * de ces seules tables, que plus aucun code ne lit.
  */
 type MigrationDef =
   | { version: number; name: string; sql: string }
@@ -96,36 +101,6 @@ export const MIGRATIONS: readonly MigrationDef[] = [
       version: 1,
       name: 'create_initial_tables',
       sql: `
-        CREATE TABLE IF NOT EXISTS sync_records (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          google_photo_id TEXT UNIQUE NOT NULL,
-          filename TEXT NOT NULL,
-          google_url TEXT NOT NULL,
-          cubbit_path TEXT NOT NULL,
-          file_size INTEGER NOT NULL,
-          mime_type TEXT NOT NULL,
-          created_date TEXT NOT NULL,
-          sync_date TEXT,
-          status TEXT NOT NULL DEFAULT 'pending',
-          error_message TEXT,
-          metadata TEXT,
-          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-          updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-        );
-        
-        CREATE TABLE IF NOT EXISTS sync_sessions (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          start_time TEXT NOT NULL,
-          end_time TEXT,
-          status TEXT NOT NULL,
-          files_processed INTEGER DEFAULT 0,
-          files_success INTEGER DEFAULT 0,
-          files_error INTEGER DEFAULT 0,
-          total_size INTEGER DEFAULT 0,
-          config TEXT,
-          created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        );
-        
         CREATE TABLE IF NOT EXISTS app_metadata (
           key TEXT PRIMARY KEY,
           value TEXT NOT NULL,
@@ -136,24 +111,13 @@ export const MIGRATIONS: readonly MigrationDef[] = [
     {
       version: 2,
       name: 'create_indexes',
-      sql: `
-        CREATE INDEX IF NOT EXISTS idx_sync_records_status ON sync_records(status);
-        CREATE INDEX IF NOT EXISTS idx_sync_records_google_id ON sync_records(google_photo_id);
-        CREATE INDEX IF NOT EXISTS idx_sync_records_created_date ON sync_records(created_date);
-        CREATE INDEX IF NOT EXISTS idx_sync_sessions_start_time ON sync_sessions(start_time);
-        CREATE INDEX IF NOT EXISTS idx_sync_sessions_status ON sync_sessions(status);
-      `,
+      // Migration conservée pour la numérotation : ses index ne portaient que sur l'ancienne synchronisation (retirée).
+      sql: `SELECT 1;`,
     },
     {
       version: 3,
       name: 'add_triggers',
       sql: `
-        CREATE TRIGGER IF NOT EXISTS update_sync_records_timestamp 
-        AFTER UPDATE ON sync_records
-        BEGIN
-          UPDATE sync_records SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
-        END;
-        
         CREATE TRIGGER IF NOT EXISTS update_app_metadata_timestamp 
         AFTER UPDATE ON app_metadata
         BEGIN
